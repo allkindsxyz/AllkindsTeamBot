@@ -19,4 +19,10 @@ class QuestionFlow(StatesGroup):
     answering = State()
     creating_question = State()
     reviewing_question = State()
-    choosing_correction = State() 
+    choosing_correction = State()
+    confirming_delete = State()
+
+
+class MatchingStates(StatesGroup):
+    finding_matches = State()
+    waiting_for_chat_confirmation = State() 

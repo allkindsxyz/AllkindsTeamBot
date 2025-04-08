@@ -1,6 +1,7 @@
 from aiogram import types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from src.db.models import AnswerType
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
 
 def get_question_keyboard() -> InlineKeyboardMarkup:
@@ -61,24 +62,24 @@ def get_group_menu_keyboard(current_section=None) -> types.InlineKeyboardMarkup:
     ])
 
 
-def get_group_menu_reply_keyboard() -> types.ReplyKeyboardMarkup:
-    """Return reply keyboard for group menu with navigation buttons."""
-    keyboard = [
-        [
-            types.KeyboardButton(text="❓ Questions"),
-            types.KeyboardButton(text="➕ Add Question")
-        ],
-        [
-            types.KeyboardButton(text="🤝 Matches"),
-            types.KeyboardButton(text="🔙 Main Menu")
-        ]
-    ]
-    
-    return types.ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        persistent=True
+def get_group_menu_reply_keyboard(current_section=None) -> types.ReplyKeyboardMarkup:
+    """Creates a persistent reply keyboard for the group menu."""
+    builder = ReplyKeyboardBuilder()
+
+    # Define button texts based on current section
+    questions_text = "▶️ Questions" if current_section == "questions" else "❓ Questions"
+    add_question_text = "▶️ Add Question" if current_section == "add_question" else "➕ Add Question"
+    matches_text = "▶️ Find a match" if current_section == "matches" else "🔍 Find a match"
+
+    builder.row(
+        types.KeyboardButton(text=questions_text),
+        types.KeyboardButton(text=add_question_text)
     )
+    builder.row(
+        types.KeyboardButton(text=matches_text),
+        types.KeyboardButton(text="🔙 Main Menu")
+    )
+    return builder.as_markup(resize_keyboard=True, one_time_keyboard=False)
 
 
 def get_answer_keyboard_with_skip(question_id: int) -> types.InlineKeyboardMarkup:
@@ -107,4 +108,19 @@ def get_answer_keyboard_with_skip(question_id: int) -> types.InlineKeyboardMarku
             )
         ]
     ]
-    return types.InlineKeyboardMarkup(inline_keyboard=keyboard) 
+    return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_match_confirmation_keyboard(matched_user_id: int) -> types.InlineKeyboardMarkup:
+    """Creates inline keyboard with Go to chat and Cancel buttons."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="💬 Go to anonymous chat",
+        callback_data=f"start_anon_chat:{matched_user_id}"
+    )
+    builder.button(
+        text="❌ Cancel",
+        callback_data="cancel_match"
+    )
+    builder.adjust(1) # Arrange buttons vertically
+    return builder.as_markup() 
