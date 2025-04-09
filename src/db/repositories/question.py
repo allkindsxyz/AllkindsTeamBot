@@ -1,8 +1,10 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 from src.db.models import Question
 from src.db.repositories.base import BaseRepository
+from src.core.question_categorizer import categorize_question
 
 
 class QuestionRepository(BaseRepository[Question]):
@@ -12,16 +14,29 @@ class QuestionRepository(BaseRepository[Question]):
     async def create_question(
         self, session: AsyncSession, text: str, author_id: int, group_id: int
     ) -> Question:
-        """Creates a new question."""
-        return await self.create(
+        """Creates a new question with categorization."""
+        # Categorize the question
+        category = await categorize_question(text)
+        
+        question = await self.create(
             session,
             data={
                 "text": text,
                 "author_id": author_id,
                 "group_id": group_id,
+                "category": category,
                 # Assuming default values for is_approved, is_active, counts etc.
             }
         )
+        # Ensure the transaction is committed
+        try:
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Error committing question creation transaction: {e}")
+            await session.rollback()
+            raise
+            
+        return question
 
     async def get_next_question_for_user(
         self, session: AsyncSession, user_id: int, group_id: int
@@ -35,13 +50,19 @@ class QuestionRepository(BaseRepository[Question]):
 
     async def get_group_questions(self, session: AsyncSession, group_id: int) -> list[Question]:
         """Get all questions for a specific group."""
+        # Make sure we're retrieving ALL active questions for the group
+        # with a clear, explicit query that doesn't depend on any user-specific filters
         query = select(Question).where(
             Question.group_id == group_id,
             Question.is_active == True
-        ).order_by(Question.created_at.desc())
+        ).order_by(Question.created_at.asc())  # Changed to ascending order (oldest first)
         
         result = await session.execute(query)
-        return result.scalars().all()
+        questions = result.scalars().all()
+        
+        # Log the retrieval for debugging
+        logger.info(f"Retrieved {len(questions)} active questions for group {group_id}")
+        return questions
 
     async def get_all_active(self, session: AsyncSession) -> list[Question]:
         """Get all active questions across all groups."""

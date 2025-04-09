@@ -75,21 +75,21 @@ async def is_yes_no_question(text: str) -> Tuple[bool, str]:
         logger.info(f"Checking if question is yes/no: '{text[:30]}...'")
         
         messages = [
-            {"role": "system", "content": "You are a helpful assistant that evaluates if a question is suitable for yes/no or agree/disagree responses. Be lenient and inclusive in your judgments, especially for questions about personal attributes, work styles, or self-identification."},
+            {"role": "system", "content": "You are a helpful assistant that evaluates if a question is suitable for yes/no or agree/disagree responses. Be extremely lenient and inclusive in your judgments - ALWAYS ERR ON THE SIDE OF ACCEPTING QUESTIONS, especially for questions about personal values, ethics, relationships, money, or self-identification."},
             {"role": "user", "content": f"""Analyze if the following question is valid for our platform. The question should be either:
 1. A direct yes/no question (e.g., "Are you happy with your job?", "Do you like programming?", "Do you consider yourself a system-thinker?")
 2. A statement that can be answered with degrees of agreement (e.g., "Remote work improves productivity", "Teamwork is essential")
+3. A normative or value-based question that could be answered with agree/disagree (e.g., "Is it okay to use your partner's money?", "Is it normal to live at your partner's expense?")
 
 Question: "{text}"
 
 Important guidelines:
-- The question may contain emojis, hyphenated terms, or specialized concepts which are all valid
-- Questions about self-identification (e.g., "Are you a morning person?", "Do you consider yourself detail-oriented?") are valid
-- Questions about work styles, personalities, or personal attributes are valid
-- Be inclusive and lenient - if someone could reasonably respond with Yes/No or Agree/Disagree, the question is valid
+- Be EXTREMELY lenient - if there's ANY WAY a question could be answered with Yes/No or Agree/Disagree, the question is valid
+- Questions about values, ethics, norms, or what's "okay" or "normal" are VALID
+- Questions about relationships, money, or personal boundaries are VALID
+- Questions in any language are VALID as long as they can be answered with Yes/No
+- Questions starting with "Is it okay to..." or "Is it normal to..." are ALWAYS VALID
 - Many edge cases that seem ambiguous can still be answered with Agree/Disagree
-
-Focus only on whether the question can reasonably be answered with YES/NO or AGREE/DISAGREE options.
 
 Respond in JSON format:
 {{
@@ -113,6 +113,22 @@ Respond in JSON format:
         parsed = json.loads(result)
         is_valid = parsed.get("is_yes_no_question", False)
         reason = parsed.get("reason", "Not a yes/no question")
+        
+        # Be extra lenient with obvious yes/no questions
+        if not is_valid:
+            # Always accept questions that contain obvious yes/no patterns
+            lower_text = text.lower()
+            yes_no_patterns = [
+                "is it okay", "is it normal", "do you", "are you", "have you", 
+                "would you", "could you", "should you", "is this", "are there", 
+                "нормально ли", "можно ли", "хорошо ли", "ты бы", 
+                "ты считаешь", "как ты думаешь", "как ты относишься", "нормально", 
+                "правильно ли", "согласен ли", "по твоему мнению"
+            ]
+            
+            if any(pattern in lower_text for pattern in yes_no_patterns):
+                logger.info(f"Overriding AI decision - accepting question with yes/no pattern: '{text[:30]}...'")
+                return True, ""
         
         return is_valid, reason if not is_valid else ""
         

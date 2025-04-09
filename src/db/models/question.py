@@ -18,6 +18,7 @@ class Question(Base):
     
     # Question content
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="other")
     
     # Question status
     is_approved: Mapped[bool] = mapped_column(Boolean, default=False)

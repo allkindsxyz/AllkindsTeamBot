@@ -1,4 +1,4 @@
-from sqlalchemy import select, exists
+from sqlalchemy import select, exists, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Group, GroupMember, MemberRole
@@ -86,6 +86,16 @@ class GroupRepository(BaseRepository[Group]):
         query = select(GroupMember).where(GroupMember.group_id == group_id)
         result = await session.execute(query)
         return result.scalars().all()
+
+    async def remove_user_from_group(self, session: AsyncSession, user_id: int, group_id: int) -> bool:
+        """Remove a user from a group."""
+        query = delete(GroupMember).where(
+            GroupMember.user_id == user_id,
+            GroupMember.group_id == group_id
+        )
+        result = await session.execute(query)
+        await session.commit()
+        return result.rowcount > 0
 
 # Create a singleton instance
 group_repo = GroupRepository() 

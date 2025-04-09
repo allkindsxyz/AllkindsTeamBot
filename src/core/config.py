@@ -14,8 +14,10 @@ class Settings(BaseSettings):
     
     # Bot specific settings (now centralized)
     BOT_TOKEN: str
+    COMMUNICATOR_BOT_TOKEN: str
     # ADMIN_IDS should hold the final list of ints
     ADMIN_IDS: List[int] # Changed type hint to List[int]
+    COMMUNICATOR_BOT_USERNAME: str = Field(default="", alias='COMMUNICATOR_BOT_USERNAME')
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod

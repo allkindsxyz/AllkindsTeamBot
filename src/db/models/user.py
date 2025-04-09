@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String
+from sqlalchemy import BigInteger, Boolean, DateTime, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -21,6 +21,9 @@ class User(Base):
     # User state
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    # Points system
+    points: Mapped[int] = mapped_column(Integer, default=0)
     
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

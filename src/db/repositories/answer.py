@@ -9,6 +9,15 @@ class AnswerRepository(BaseRepository[Answer]):
     def __init__(self):
         super().__init__(Answer)
 
+    async def get_answer(self, session: AsyncSession, user_id: int, question_id: int) -> Answer | None:
+        """Get a specific answer by user_id and question_id."""
+        query = select(Answer).where(
+            Answer.user_id == user_id,
+            Answer.question_id == question_id
+        )
+        result = await session.execute(query)
+        return result.scalar_one_or_none()
+
     async def save_answer(
         self, session: AsyncSession, user_id: int, question_id: int, answer_type: str, value: int
     ) -> Answer:

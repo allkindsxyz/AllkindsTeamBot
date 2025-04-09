@@ -62,23 +62,24 @@ def get_group_menu_keyboard(current_section=None) -> types.InlineKeyboardMarkup:
     ])
 
 
-def get_group_menu_reply_keyboard(current_section=None) -> types.ReplyKeyboardMarkup:
+def get_group_menu_reply_keyboard(current_section=None, balance=0) -> types.ReplyKeyboardMarkup:
     """Creates a persistent reply keyboard for the group menu."""
     builder = ReplyKeyboardBuilder()
 
-    # Define button texts based on current section
-    questions_text = "▶️ Questions" if current_section == "questions" else "❓ Questions"
-    add_question_text = "▶️ Add Question" if current_section == "add_question" else "➕ Add Question"
-    matches_text = "▶️ Find a match" if current_section == "matches" else "🔍 Find a match"
+    # Always use the magnifying glass icon, regardless of section
+    matches_text = "🔍 Find a match"
 
+    # First row - only match button
     builder.row(
-        types.KeyboardButton(text=questions_text),
-        types.KeyboardButton(text=add_question_text)
+        types.KeyboardButton(text=matches_text)
     )
+    
+    # Second row - group info and instructions
     builder.row(
-        types.KeyboardButton(text=matches_text),
-        types.KeyboardButton(text="🔙 Main Menu")
+        types.KeyboardButton(text="📌 Group Info"),
+        types.KeyboardButton(text="📚 Instructions")
     )
+    
     return builder.as_markup(resize_keyboard=True, one_time_keyboard=False)
 
 

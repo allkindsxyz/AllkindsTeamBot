@@ -71,3 +71,15 @@ async def start_bot() -> None:
         raise
     finally:
         await bot.session.close() 
+
+# --- Add entry point execution block --- 
+if __name__ == "__main__":
+    # Configure logging (optional, adjust as needed)
+    logger.add("main_bot.log", rotation="1 week", level="INFO") 
+    logger.info("Initializing main bot...")
+    try:
+        asyncio.run(start_bot())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped manually.")
+    except Exception as e:
+        logger.exception("Main bot exited due to an error:") 
