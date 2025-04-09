@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import ssl
+import os
 from src.core.config import get_settings
 
 async def delete_webhook(token):
@@ -21,8 +22,13 @@ async def main():
     settings = get_settings()
     main_bot_token = settings.BOT_TOKEN
     
-    # Hardcoded communicator bot token (from src/communicator_bot/main.py)
-    communicator_bot_token = "7858378825:AAHz8Jz89EHCqxI81GScL77ZjCBHCSVC3cQ"
+    # Get communicator bot token from settings or environment
+    communicator_bot_token = settings.COMMUNICATOR_BOT_TOKEN
+    if not communicator_bot_token:
+        communicator_bot_token = os.getenv("COMMUNICATOR_BOT_TOKEN")
+        if not communicator_bot_token:
+            print("Error: COMMUNICATOR_BOT_TOKEN not found in settings or environment")
+            return
     
     # Reset the main bot's webhook
     print(f"Resetting main bot webhook...")

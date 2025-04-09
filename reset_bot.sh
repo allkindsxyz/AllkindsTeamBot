@@ -1,10 +1,26 @@
 #!/bin/bash
 
-# Note: These tokens are now also available in .env file
-# If you need to change them, update the .env file instead
-# Bot tokens
-MAIN_BOT_TOKEN="8155919814:AAEMO6RHdkcBErONs70UNjBw4XEvN2vqJuo"
-COMMUNICATOR_BOT_TOKEN="7858378825:AAHz8Jz89EHCqxI81GScL77ZjCBHCSVC3cQ"
+# Load environment variables if .env file exists
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
+
+# Check if environment variables are set
+if [ -z "$BOT_TOKEN" ]; then
+    echo "Error: BOT_TOKEN environment variable is not set."
+    echo "Please set it before running this script or create a .env file."
+    exit 1
+fi
+
+if [ -z "$COMMUNICATOR_BOT_TOKEN" ]; then
+    echo "Error: COMMUNICATOR_BOT_TOKEN environment variable is not set."
+    echo "Please set it before running this script or create a .env file."
+    exit 1
+fi
+
+# Use environment variables for tokens
+MAIN_BOT_TOKEN="$BOT_TOKEN"
+COMMUNICATOR_BOT_TOKEN="$COMMUNICATOR_BOT_TOKEN"
 
 # Delete webhook and pending updates for main bot
 echo "Resetting main bot webhook..."
