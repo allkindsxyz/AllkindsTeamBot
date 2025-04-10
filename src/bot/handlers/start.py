@@ -2242,6 +2242,9 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_confirm_leave_group, F.data.startswith("confirm_leave:"))
     dp.callback_query.register(on_cancel_leave_group, F.data == "cancel_leave")
     
+    # Register handler for manage group functionality
+    dp.callback_query.register(on_manage_group_callback, F.data.startswith("manage_group:"))
+    
     # Register text handlers for answering state
     dp.message.register(on_show_questions, F.text == "❓ Questions", QuestionFlow.answering)
     dp.message.register(on_show_questions, F.text == "▶️ Questions", QuestionFlow.answering)
@@ -2571,23 +2574,43 @@ async def on_group_info(message: types.Message, state: FSMContext, session: Asyn
     invite_payload = f"g{group.id}"
     invite_link = await create_start_link(message.bot, payload=invite_payload)
     
+    # Get user info
+    user_id = message.from_user.id
+    db_user = await user_repo.get_by_telegram_id(session, user_id)
+    if not db_user:
+        logger.error(f"User {user_id} not found in DB when showing group info")
+        await message.answer("Error: Could not find your user account. Please try /start again.")
+        return
+    
+    # Check if the user is the creator of the group
+    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+    
     # Get group description (default if not set)
     description = group.description or "No description available"
     
-    # Create keyboard with leave group button
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="🔗 Share Invite Link", url=invite_link)],
-        [types.InlineKeyboardButton(text="❌ Leave Group", callback_data=f"leave_group:{group.id}")]
+    # Create keyboard buttons
+    keyboard_buttons = []
+    
+    # Always add leave group button
+    keyboard_buttons.append([
+        types.InlineKeyboardButton(text="❌ Leave the group", callback_data=f"leave_group:{group.id}")
     ])
+    
+    # Add manage group button only for the creator
+    if is_creator:
+        keyboard_buttons.append([
+            types.InlineKeyboardButton(text="⚙️ Manage the group", callback_data=f"manage_group:{group.id}")
+        ])
+    
+    # Create keyboard with buttons
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
     # Create the info message
     info_text = (
-        f"📌 <b>Group Info: {group.name}</b>\n\n"
+        f"<b>{group.name}</b>\n\n"
         f"{description}\n\n"
-        f"<b>Group ID:</b> {group.id}\n"
-        f"<b>Members:</b> {len(group.members)}\n"
-        f"<b>Created:</b> {group.created_at.strftime('%Y-%m-%d')}\n\n"
-        "Share this link with others to invite them to your group:"
+        f"Share this link with others to invite them to your group:\n"
+        f"{invite_link}"
     )
     
     # Store the message ID to clean it up later
@@ -2724,6 +2747,51 @@ async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext
     
     # Restore the group info message
     await on_group_info(callback.message, state, session)
+
+
+async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle when a creator clicks Manage Group button."""
+    await callback.answer("Group management functionality is coming soon!")
+    
+    # No actual functionality yet, just acknowledge the click
+    # In the future, this will show admin controls
+    
+    # Get data from state
+    data = await state.get_data()
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        await callback.message.answer("Error: Could not find your user account.")
+        return
+    
+    # Get group from DB
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.message.answer("Error: Group not found.")
+        return
+    
+    # Verify the user is the creator
+    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+    if not is_creator:
+        await callback.message.answer("Error: Only the group creator can manage the group.")
+        return
+    
+    # For now, just show a message about the upcoming feature
+    coming_soon_text = (
+        f"<b>Group Management for {group.name}</b>\n\n"
+        f"Group management features are coming soon!\n\n"
+        f"Future features will include:\n"
+        f"• Editing group name and description\n"
+        f"• Managing member permissions\n"
+        f"• Moderating questions and answers\n"
+        f"• Group analytics and insights"
+    )
+    
+    # Show the message
+    await callback.message.edit_text(coming_soon_text, parse_mode="HTML")
 
 
 async def delete_user_answers_in_group(session: AsyncSession, user_id: int, group_id: int) -> int:

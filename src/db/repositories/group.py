@@ -96,6 +96,33 @@ class GroupRepository(BaseRepository[Group]):
         result = await session.execute(query)
         await session.commit()
         return result.rowcount > 0
+        
+    async def is_user_in_group(self, session: AsyncSession, user_id: int, group_id: int) -> bool:
+        """Check if a user is a member of a group."""
+        query = select(exists().where(
+            (GroupMember.user_id == user_id) & 
+            (GroupMember.group_id == group_id)
+        ))
+        result = await session.execute(query)
+        return result.scalar_one()
+        
+    async def is_group_creator(self, session: AsyncSession, user_id: int, group_id: int) -> bool:
+        """Check if a user is the creator of a group."""
+        query = select(exists().where(
+            (Group.id == group_id) & 
+            (Group.creator_id == user_id)
+        ))
+        result = await session.execute(query)
+        return result.scalar_one()
+        
+    async def get_user_role(self, session: AsyncSession, user_id: int, group_id: int) -> str | None:
+        """Get the role of a user in a group. Returns None if user is not in group."""
+        query = select(GroupMember.role).where(
+            (GroupMember.user_id == user_id) & 
+            (GroupMember.group_id == group_id)
+        )
+        result = await session.execute(query)
+        return result.scalar_one_or_none()
 
 # Create a singleton instance
 group_repo = GroupRepository() 
