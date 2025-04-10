@@ -1273,10 +1273,31 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
             except Exception as e:
                 logger.warning(f"Failed to delete validation message: {e}")
         
-        # Final success message
-        # Use the group name from the state data, not an undefined variable
-        success_text = f"✅ Your question has been added to {group_name}!\n+5💎 points awarded."
-        await callback.message.answer(success_text)
+        # Delete the confirmation message (the message with the inline buttons)
+        try:
+            if callback.message and callback.message.message_id:
+                await callback.message.delete()
+                logger.info(f"Deleted confirmation message with ID {callback.message.message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete confirmation message: {e}")
+            
+        # Delete the original question message if it exists
+        if original_question_message_id:
+            try:
+                await callback.bot.delete_message(
+                    chat_id=callback.message.chat.id,
+                    message_id=original_question_message_id
+                )
+                logger.info(f"Deleted original question message with ID {original_question_message_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete original question message: {e}")
+        
+        # Final success message - shorter and showing the balance
+        success_text = f"✅ Question added and 5 💎 points awarded.\nYour balance is: {updated_user.points} 💎 points."
+        success_msg = await callback.message.answer(success_text)
+        
+        # Store success message ID in state to delete it later when user answers
+        await state.update_data(question_added_success_msg_id=success_msg.message_id)
         
         # Send notification to other group members
         try:
@@ -1308,6 +1329,10 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
             text=new_question.text,
             reply_markup=keyboard
         )
+        
+        # Set state back to viewing question
+        await state.set_state(QuestionFlow.viewing_question)
+        
     except Exception as e:
         logger.error(f"Error saving question: {str(e)}", exc_info=True)
         # Try to provide a more useful error message
@@ -1353,6 +1378,7 @@ async def on_cancel_add_question(callback: types.CallbackQuery, state: FSMContex
     if callback.message and callback.message.message_id:
         try:
             await callback.message.delete()
+            logger.info(f"Deleted confirmation message with ID {callback.message.message_id}")
         except Exception as e:
             logger.warning(f"Failed to delete confirmation message: {e}")
     
@@ -1464,6 +1490,21 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
                 await callback.answer(f"Answer saved! +1💎 (Balance: {updated_user.points}💎)")
             else:
                 await callback.answer("Answer updated! ✅")
+            
+            # Delete success message if this is a newly created question being answered
+            user_data = await state.get_data()
+            success_msg_id = user_data.get("question_added_success_msg_id")
+            if success_msg_id:
+                try:
+                    await callback.bot.delete_message(
+                        chat_id=callback.message.chat.id,
+                        message_id=success_msg_id
+                    )
+                    logger.info(f"Deleted question success message with ID {success_msg_id}")
+                    # Remove the message ID from state
+                    await state.update_data(question_added_success_msg_id=None)
+                except Exception as e:
+                    logger.warning(f"Failed to delete question success message: {e}")
             
             # Get the question data for buttons and display
             question = await question_repo.get(session, question_id)

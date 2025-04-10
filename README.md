@@ -29,9 +29,9 @@ cd allkinds-team-bot
 
 2. Set up a virtual environment and install dependencies:
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 3. Create a `.env` file based on `.env.example`:
@@ -43,8 +43,14 @@ ADMIN_IDS=your_telegram_id
 
 4. Run the bot:
 ```bash
-python run.py
+python3 start_bot.py
 ```
+
+## Important Rules
+
+- **Always use Python 3**: Use `python3` command instead of just `python` to ensure compatibility.
+- **Correct Entry Point**: The main entry point for the bot is `start_bot.py`, not `run.py` or `main.py`.
+- To stop the bot, use: `python3 stop_bot.py`
 
 ## Development
 
