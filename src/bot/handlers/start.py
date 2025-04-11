@@ -916,104 +916,17 @@ async def on_confirm_delete_question(callback: types.CallbackQuery, state: FSMCo
 
 
 async def on_cancel_delete_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    """Handle cancellation of question deletion."""
+    """
+    Handle cancellation of question deletion.
+    Simply dismisses the confirmation dialog by deleting the message.
+    """
     await callback.answer("Cancelled")
     
-    # Extract question ID from callback data
-    question_id = int(callback.data.split(":")[1])
-    
-    # Get the question from the database
-    question = await question_repo.get(session, question_id)
-    if not question:
-        await callback.message.edit_text("This question no longer exists.")
-        return
-    
-    # Recreate the original question display
-    # First check if user has answered this question
-    user_tg = callback.from_user
-    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-    if not db_user:
-        await callback.message.edit_text("Error: Could not find your user account.")
-        return
-    
-    # Get user's answer if any
-    user_answer = await answer_repo.get_answer_by_question_and_user(
-        session, 
-        question_id=question_id,
-        user_id=db_user.id
-    )
-    
-    # Create action buttons based on whether user is the author
-    action_buttons = []
-    if question.author_id == db_user.id:
-        # Author can delete
-        action_buttons.append(
-            types.InlineKeyboardButton(
-                text="🗑️ Delete",
-                callback_data=f"delete_question:{question_id}"
-            )
-        )
-    
-    # Create answer buttons
-    answer_buttons = []
-    if not user_answer:
-        # User hasn't answered yet, show answer options
-        answer_buttons = [
-            [
-                types.InlineKeyboardButton(
-                    text="--",
-                    callback_data=f"answer:{question_id}:-2"
-                ),
-                types.InlineKeyboardButton(
-                    text="-",
-                    callback_data=f"answer:{question_id}:-1"
-                ),
-                types.InlineKeyboardButton(
-                    text="+",
-                    callback_data=f"answer:{question_id}:1"
-                ),
-                types.InlineKeyboardButton(
-                    text="++",
-                    callback_data=f"answer:{question_id}:2"
-                ),
-            ],
-            [
-                types.InlineKeyboardButton(
-                    text="Skip",
-                    callback_data=f"skip_question:{question_id}"
-                )
-            ]
-        ]
-    else:
-        # User has answered, show their answer
-        answer_text = {
-            -2: "Strong No (--)",
-            -1: "No (-)",
-            1: "Yes (+)",
-            2: "Strong Yes (++)"
-        }.get(user_answer.value, "Unknown")
-        
-        answer_buttons = [
-            [
-                types.InlineKeyboardButton(
-                    text=f"Your answer: {answer_text}",
-                    callback_data=f"dummy:{question_id}"
-                )
-            ]
-        ]
-    
-    # Combine all buttons
-    keyboard_buttons = answer_buttons
-    if action_buttons:
-        keyboard_buttons.append(action_buttons)
-    
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    
-    # Update the message
-    await callback.message.edit_text(
-        text=question.text,
-        reply_markup=keyboard
-    )
+    # Delete the confirmation message
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.warning(f"Failed to delete confirmation message: {e}")
     
     # Clear confirmation state and return to viewing questions
     await state.set_state(QuestionFlow.viewing_question)
