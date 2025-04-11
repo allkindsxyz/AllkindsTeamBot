@@ -846,7 +846,7 @@ async def on_delete_question(callback: types.CallbackQuery, state: FSMContext, s
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [
             types.InlineKeyboardButton(
-                text="✅ Confirm Delete",
+                text="✅ Delete",
                 callback_data=f"confirm_delete_question:{question_id}"
             ),
             types.InlineKeyboardButton(
@@ -2365,7 +2365,7 @@ async def on_delete_question_callback(callback: types.CallbackQuery, state: FSMC
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [
             types.InlineKeyboardButton(
-                text="✅ Confirm Delete",
+                text="✅ Delete",
                 callback_data=f"confirm_delete_question:{question_id}"
             ),
             types.InlineKeyboardButton(
