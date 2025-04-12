@@ -4,8 +4,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from loguru import logger
 from aiogram.fsm.storage.base import StorageKey
+from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime
 
 from .states import ChatState
+from .repositories import user_repo, get_by_session_id, update_status
 
 # Simple in-memory storage for POC
 # In production, use a database
@@ -178,36 +181,108 @@ async def handle_stop(message: Message, state: FSMContext, bot: Bot):
 
 
 @router.message(ChatState.in_chat, F.text)
-async def relay_message(message: Message, state: FSMContext, bot: Bot):
+async def relay_message(message: Message, state: FSMContext, bot: Bot, session: AsyncSession):
     """Relays messages between paired users."""
     user_id = message.from_user.id
-    partner_id = active_chats.get(user_id)
-
-    if not partner_id:
-        logger.warning(f"User {user_id} in state in_chat but no partner found in active_chats.")
+    data = await state.get_data()
+    chat_session_id = data.get("chat_session_id")
+    partner_id = data.get("partner_id")
+    
+    if not chat_session_id or not partner_id:
+        logger.warning(f"User {user_id} in state in_chat but no chat_session_id or partner_id found in state.")
         await message.reply("You are not connected to anyone. Try finding a match in the main bot.")
         await state.clear()
         return
-
-    # Use assigned nickname, fallback if necessary
-    sender_nickname = user_nicknames.get(user_id, f"User_{user_id % 1000}")
-    try:
-        await bot.send_message(partner_id, f"**{sender_nickname}**: {message.text}")
-        logger.debug(f"Relayed message from {user_id} ({sender_nickname}) to {partner_id}")
-    except Exception as e:
-        logger.error(f"Failed to relay message from {user_id} to {partner_id}: {e}")
-        await message.reply("Could not send message to your partner. They might have left or blocked the bot.")
-        # End the chat for this user as well
-        # Use a simplified stop logic here to avoid potential state issues if partner state access fails
-        active_chats.pop(user_id, None)
-        user_nicknames.pop(user_id, None)
+    
+    # Get chat session
+    chat_session = await get_by_session_id(session, data.get("session_id"))
+    if not chat_session or chat_session.status != "active":
+        await message.reply("This chat is no longer active.")
         await state.clear()
-        # Attempt to inform partner without relying on state access
-        if partner_id in active_chats: # Check if partner still thinks they are active
-             active_chats.pop(partner_id, None)
-             user_nicknames.pop(partner_id, None)
-             try: await bot.send_message(partner_id, "Your chat partner has disconnected due to an error.")
-             except: pass
+        return
+    
+    # Get partner
+    partner = await user_repo.get(session, partner_id)
+    if not partner or not partner.telegram_id:
+        await message.reply("Cannot find your chat partner. They may have left.")
+        return
+    
+    # Handle special commands
+    if message.text == "🔍 Reveal Identity":
+        # Handle identity revelation
+        user = await user_repo.get_by_telegram_id(session, user_id)
+        reveal_message = f"Your chat partner has revealed their identity:\n\n" \
+                        f"Name: {user.first_name} {user.last_name or ''}\n" \
+                        f"Username: @{user.username or 'N/A'}"
+        
+        await bot.send_message(chat_id=partner.telegram_id, text=reveal_message)
+        await message.answer("You've revealed your identity to your chat partner.")
+        return
+        
+    elif message.text == "❌ End Chat":
+        # Handle chat ending
+        await end_chat(message, state, session, bot)
+        return
+    
+    # Regular message - forward it
+    try:
+        await bot.send_message(chat_id=partner.telegram_id, text=message.text)
+        
+        # Update last activity
+        chat_session.last_activity = datetime.utcnow()
+        await session.commit()
+        
+    except Exception as e:
+        logger.error(f"Error forwarding message: {e}")
+        await message.answer("Failed to send your message. The recipient may have blocked the bot.")
+        # End the chat for this user as well
+        await end_chat(message, state, session, bot)
+
+
+async def end_chat(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
+    """End the anonymous chat session."""
+    # Get state data
+    data = await state.get_data()
+    chat_session_id = data.get("chat_session_id")
+    partner_id = data.get("partner_id")
+    
+    if not chat_session_id:
+        await message.answer("No active chat found.")
+        await state.clear()
+        return
+    
+    # Get chat session
+    chat_session = await get_by_session_id(session, data.get("session_id"))
+    if not chat_session:
+        await message.answer("Chat session not found.")
+        await state.clear()
+        return
+    
+    # Mark chat as ended
+    chat_session = await update_status(session, chat_session.id, "ended", set_ended=True)
+    
+    # Notify current user
+    keyboard = types.ReplyKeyboardRemove()
+    await message.answer(
+        "Chat has been ended. You can start a new chat from the main bot.",
+        reply_markup=keyboard
+    )
+    
+    # Notify partner if available
+    if partner_id:
+        partner = await user_repo.get(session, partner_id)
+        if partner and partner.telegram_id:
+            try:
+                await bot.send_message(
+                    chat_id=partner.telegram_id,
+                    text="Your chat partner has ended the conversation.",
+                    reply_markup=types.ReplyKeyboardRemove()
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify partner about chat end: {e}")
+    
+    # Clear state
+    await state.clear()
 
 
 def register_handlers(dp: Dispatcher):

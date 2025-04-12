@@ -42,5 +42,13 @@ class User(Base):
     created_groups = relationship("Group", back_populates="creator")
     group_memberships = relationship("GroupMember", back_populates="user")
     
+    # Match relationships
+    matches_as_user1 = relationship("Match", foreign_keys="Match.user1_id", back_populates="user1")
+    matches_as_user2 = relationship("Match", foreign_keys="Match.user2_id", back_populates="user2")
+    
+    # Chat session relationships
+    initiated_chats = relationship("AnonymousChatSession", foreign_keys="AnonymousChatSession.initiator_id", back_populates="initiator")
+    received_chats = relationship("AnonymousChatSession", foreign_keys="AnonymousChatSession.recipient_id", back_populates="recipient")
+    
     def __repr__(self) -> str:
         return f"<User {self.id} ({self.telegram_id}): {self.first_name}>" 

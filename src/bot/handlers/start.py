@@ -21,9 +21,10 @@ from src.bot.keyboards.inline import (
 from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates
 from src.core.openai_service import is_yes_no_question, check_duplicate_question, check_spelling
 from src.db import get_session
-from src.db.repositories import user_repo, question_repo, answer_repo, group_repo
-from src.db.models import Answer, User, AnswerType, MemberRole, Question
+from src.db.repositories import user_repo, question_repo, answer_repo, group_repo, match_repo
+from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match
 from src.bot.utils.matching import find_best_match
+from src.db.repositories.match_repo import get_match_between_users
 
 settings = get_settings() # Get settings from config
 
@@ -144,9 +145,9 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
         await state.set_state(QuestionFlow.viewing_question)
         await on_show_questions(message, state, session)
     else:
-        # User is not in any group, show beta testing message
-        logger.info(f"User {user_tg.id} is not in any groups. Showing beta testing message.")
-        await show_beta_message(message)
+        # User is not in any group, show welcome menu with create/join options
+        logger.info(f"User {user_tg.id} is not in any groups. Showing welcome menu.")
+        await show_welcome_menu(message)
 
 
 async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
@@ -191,15 +192,11 @@ async def show_welcome_menu(message: types.Message) -> None:
     
     welcome_text = (
         f"👋 Welcome to Allkinds, {user.first_name}!\n\n"
-        "This bot helps you find people who share your values.\n\n"
-        "How it works:\n"
-        "1. Join or create a Team\n"
-        "2. Answer yes/no questions about your values\n"
-        "3. Get matched with people who have similar answers\n\n"
+        "Connect with people who share your values through yes/no questions and answers.\n\n"
         "What would you like to do?"
     )
     
-    # Get the keyboard with "Create a Team" and "Join a Team" buttons
+    # Get the keyboard with "Create a Team" and "Contact Allkinds Team" buttons
     keyboard = get_start_menu_keyboard()
     
     await message.answer(welcome_text, reply_markup=keyboard)
@@ -358,15 +355,20 @@ async def on_team_confirm(callback: types.CallbackQuery, state: FSMContext, sess
         success_text = (
             f"🎉 Your Team '{team_name}' has been created successfully!\n\n"
             f"Share this link to invite others to your team:\n{invite_link}\n\n"
-            f"Use /questions to start creating questions for your team!"
+            f"Click the button below to go to your team:"
         )
+        
+        # Create keyboard with Go to group button
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🚀 Go to the group", callback_data=f"go_to_group:{new_group.id}")]
+        ])
         
         logger.info(f"Created team '{team_name}' with ID {new_group.id}, invite link: {invite_link}")
         
-        await callback.message.answer(success_text)
+        await callback.message.answer(success_text, reply_markup=keyboard)
         
     except Exception as e:
-        logger.error(f"Error creating group: {e}")
+        logger.error(f"Error creating team: {e}")
         await callback.message.answer("Error creating team. Please try again.")
     
     # Clear the state
@@ -891,10 +893,10 @@ async def on_confirm_delete_question(callback: types.CallbackQuery, state: FSMCo
     # Delete the question
     await question_repo.delete(session, question_id)
     await session.commit()
-    
+        
     # Log the deletion
     logger.info(f"User {db_user.id} deleted question {question_id}")
-    
+        
     # Delete the message instead of showing "Question deleted"
     try:
         await callback.message.delete()
@@ -948,11 +950,8 @@ async def send_question_notification(bot: Bot, question_id: int, group_id: int, 
     group_members = await group_repo.get_group_members(session, group_id)
     logger.info(f"Sending notification about question {question_id} to {len(group_members)} group members")
     
-    # Format the notification message with plain question text
-    notification_text = (
-        f"<b>📝 New Question in {group.name}</b>\n\n"
-        f"{question.text}"
-    )
+    # Format the notification message with just the question text, no header
+    notification_text = question.text
     
     # Add answer buttons
     keyboard = get_answer_keyboard_with_skip(question_id)
@@ -1328,13 +1327,26 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
         _, question_id_str, answer_type_str = parts
         question_id = int(question_id_str)
         
+        # Check if the question exists right away, before any processing
+        question = await question_repo.get(session, question_id)
+        if not question:
+            logger.info(f"User {callback.from_user.id} tried to answer a deleted question {question_id}")
+            await callback.answer("This question has been deleted.", show_alert=True)
+            
+            # Update the message to indicate the question is deleted
+            deleted_text = "❌ This question has been deleted."
+            try:
+                await callback.message.edit_text(deleted_text, reply_markup=None)
+                logger.info(f"Updated message to show question {question_id} was deleted")
+            except Exception as e:
+                logger.warning(f"Failed to update message for deleted question: {e}")
+            
+            return
+        
         # Check if user is toggling the answer (clicked on the answer button)
         if answer_type_str == "toggle":
             logger.info(f"User {callback.from_user.id} toggling answer for question {question_id}")
-            question = await question_repo.get(session, question_id)
-            if not question:
-                await callback.answer("Cannot find this question anymore.", show_alert=True)
-                return
+            # We've already checked the question exists at the beginning of the function
                 
             # Show all answer options
             full_keyboard = get_answer_keyboard_with_skip(question_id)
@@ -1385,7 +1397,7 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
         # Check if the user has already answered this question
         existing_answer = await answer_repo.get_answer(session, db_user.id, question_id)
         is_new_answer = existing_answer is None
-        
+             
         # Save the answer to the database
         try:
             saved_answer = await answer_repo.save_answer(
@@ -1458,14 +1470,17 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
             # Create the keyboard with the appropriate buttons
             single_button_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
             
-            # Check if the message is a notification - only modify the display, don't delete
+            # Check if the message is a notification - keep question but remove the header
             if callback.message and callback.message.text and callback.message.text.startswith("<b>📝 New Question in"):
-                # Remove the notification header, show only the question text
+                # Extract just the question text (everything after the notification header)
+                question_text = question.text
+                
+                # Edit the message to show only the question text with the answer button
                 await callback.message.edit_text(
-                    text=question.text,
+                    text=question_text,
                     reply_markup=single_button_keyboard
                 )
-                logger.info(f"Updated notification message for question {question_id} to show only question text after answering")
+                logger.info(f"Removed notification header for question {question_id} to keep chat clean")
             else:
                 # Update the existing message with just the answer button
                 await callback.message.edit_reply_markup(reply_markup=single_button_keyboard)
@@ -1495,19 +1510,9 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
 
 
 async def show_beta_message(message: types.Message) -> None:
-    """Show message about beta testing."""
-    beta_text = (
-        "🔬 <b>Beta Testing Mode</b>\n\n"
-        "Thank you for your interest in Allkinds! The bot is currently in beta testing.\n\n"
-        "To join, please contact the administrator for an invitation link."
-    )
-    
-    # Add a button to contact admin
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Contact Administrator", url="https://t.me/allkinds_admin")]
-    ])
-    
-    await message.answer(beta_text, reply_markup=keyboard)
+    """Function removed - no longer in use."""
+    # This function has been removed from active use
+    pass
 
 
 async def on_message_deleted(event, bot: Bot, state: FSMContext, session: AsyncSession) -> None:
@@ -1524,7 +1529,7 @@ async def on_message_deleted(event, bot: Bot, state: FSMContext, session: AsyncS
 
 
 # --- Add New Handlers Here ---
-async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, bot: Bot) -> None:
+async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, bot: Bot, session: AsyncSession) -> None:
     """Handles the 'Go to anonymous chat' button click."""
     await query.answer()
     user_id = query.from_user.id
@@ -1549,6 +1554,45 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
 
     logger.info(f"User {user_id} confirmed chat with {matched_user_id}")
     
+    # Get users from database
+    db_user = await user_repo.get_by_telegram_id(session, user_id)
+    matched_db_user = await user_repo.get_by_telegram_id(session, matched_user_id)
+    
+    if not db_user or not matched_db_user:
+        logger.error(f"Could not find users in database: {user_id} or {matched_user_id}")
+        await query.message.edit_text("Error: Could not find user data. Please try again.")
+        return
+    
+    # Check if there's already a match between these users
+    existing_match = await get_match_between_users(session, db_user.id, matched_db_user.id)
+    if not existing_match:
+        # Create a new match record
+        existing_match = await create_match(
+            session=session,
+            user1_id=db_user.id,
+            user2_id=matched_db_user.id,
+            score=score,
+            common_questions=common_questions
+        )
+    
+    # Check if there's already an active chat session
+    existing_chat = await get_by_match_id(session, existing_match.id)
+    if existing_chat:
+        if existing_chat.status == "active":
+            await query.message.edit_text("You already have an active chat with this person.")
+            return
+        elif existing_chat.status == "pending":
+            await query.message.edit_text("A chat invitation is already pending. Please wait for the other person to join.")
+            return
+    
+    # Create a new chat session
+    chat_session = await create_chat_session(
+        session=session,
+        initiator_id=db_user.id,
+        recipient_id=matched_db_user.id,
+        match_id=existing_match.id
+    )
+    
     # Format the cohesion score for display
     cohesion_percentage = int(score * 100)  # Convert cohesion score to percentage
     
@@ -1568,10 +1612,18 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
             match_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
         match_text += "\n"
     
-    match_text += "Anonymous chat functionality is temporarily disabled. This feature will be available soon!"
+    # Create deep link to communicator bot
+    bot_username = settings.COMMUNICATOR_BOT_USERNAME
+    deep_link = f"https://t.me/{bot_username}?start=chat_{chat_session.session_id}"
     
-    # Simple temporary message
-    await query.message.edit_text(match_text, parse_mode="HTML")
+    # Create inline button for the deeplink
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Start Anonymous Chat", url=deep_link)]
+    ])
+    
+    # Update the message with the deeplink
+    match_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
+    await query.message.edit_text(match_text, reply_markup=keyboard, parse_mode="HTML")
     
     try:
         # Create notification for the matched user
@@ -1590,12 +1642,18 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
                 notification_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
             notification_text += "\n"
             
-        notification_text += "Anonymous chat functionality is temporarily disabled. This feature will be available soon!"
+        notification_text += "Click the button below to join the anonymous chat. Your identity will remain hidden until you choose to reveal it."
         
-        # Still notify the matched user about the match
+        # Create keyboard for the matched user
+        recipient_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Join Anonymous Chat", url=deep_link)]
+        ])
+        
+        # Send notification to the matched user
         await bot.send_message(
             chat_id=matched_user_id,
             text=notification_text,
+            reply_markup=recipient_keyboard,
             parse_mode="HTML"
         )
         logger.info(f"Sent match notification to matched user {matched_user_id}")
@@ -2092,7 +2150,7 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
     if current_state is None:
         await message.answer("Nothing to cancel.")
         return
-        
+    
     logger.info(f"User {message.from_user.id} cancelling action from state {current_state}")
     
     # Get data before clearing state
@@ -2115,92 +2173,58 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
 
 
 def register_handlers(dp: Dispatcher) -> None:
-    """Register start command handlers."""
-    # Register command handlers
+    """Register all start-related handlers."""
+    # Command handlers
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_cancel, Command("cancel"))
     
-    # Register start menu callbacks
+    # Callback handlers for team and group management
     dp.callback_query.register(on_create_team, F.data == "create_team")
     dp.callback_query.register(on_join_team, F.data == "join_team")
-    dp.callback_query.register(on_join_group_callback, F.data.startswith("join_group:"))
     dp.callback_query.register(on_cancel_join, F.data == "cancel_join")
-    
-    # Register group menu callback handlers
-    dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
-    dp.callback_query.register(on_add_question_callback, F.data == "add_question")
-    dp.callback_query.register(on_find_match_callback, F.data == "find_match")
-    dp.callback_query.register(on_show_start_menu_callback, F.data == "show_start_menu")
-    
-    # Register text handlers for group menu reply keyboard buttons
-    dp.message.register(on_show_questions, F.text == "❓ Questions", QuestionFlow.viewing_question)
-    dp.message.register(on_show_questions, F.text == "▶️ Questions", QuestionFlow.viewing_question)
-    dp.message.register(on_add_question, F.text == "➕ Add Question", QuestionFlow.viewing_question)
-    dp.message.register(on_add_question, F.text == "▶️ Add Question", QuestionFlow.viewing_question)
-    dp.message.register(on_find_match, F.text.contains("Find a match"), QuestionFlow.viewing_question)
-    dp.message.register(on_show_start_menu, F.text == "🔙 Main Menu", QuestionFlow.viewing_question)
-    
-    # Register handlers for new menu buttons
-    dp.message.register(on_group_info, F.text == "📌 Group Info", QuestionFlow.viewing_question)
-    dp.message.register(on_instructions, F.text == "📚 Instructions", QuestionFlow.viewing_question)
-    dp.message.register(on_group_info, F.text == "📌 Group Info", QuestionFlow.answering)
-    dp.message.register(on_instructions, F.text == "📚 Instructions", QuestionFlow.answering)
-    
-    # Add catch-all registrations for menu buttons to work in any state
-    dp.message.register(on_group_info, F.text == "📌 Group Info")
-    dp.message.register(on_instructions, F.text == "📚 Instructions")
-    
-    # Register handlers for leave group functionality
-    dp.callback_query.register(on_leave_group_callback, F.data.startswith("leave_group:"))
+    dp.callback_query.register(on_go_to_group, F.data.startswith("go_to_group:"))
+    dp.callback_query.register(on_team_confirm, F.data == "confirm_team", TeamCreation.confirm_creation)
+    dp.callback_query.register(on_team_cancel, F.data == "cancel_team", TeamCreation.confirm_creation)
+    dp.callback_query.register(on_join_confirm, F.data.startswith("confirm_join:"))
+    dp.callback_query.register(on_join_group_callback, F.data.startswith("join_group:"))
     dp.callback_query.register(on_confirm_leave_group, F.data.startswith("confirm_leave:"))
-    dp.callback_query.register(on_cancel_leave_group, F.data == "cancel_leave")
-    
-    # Register handler for manage group functionality
+    dp.callback_query.register(on_cancel_leave_group, F.data.startswith("cancel_leave"))
+    dp.callback_query.register(on_leave_group_callback, F.data.startswith("leave_group:"))
     dp.callback_query.register(on_manage_group_callback, F.data.startswith("manage_group:"))
     
-    # Register text handlers for answering state
-    dp.message.register(on_show_questions, F.text == "❓ Questions", QuestionFlow.answering)
-    dp.message.register(on_show_questions, F.text == "▶️ Questions", QuestionFlow.answering)
-    dp.message.register(on_add_question, F.text == "➕ Add Question", QuestionFlow.answering)
-    dp.message.register(on_add_question, F.text == "▶️ Add Question", QuestionFlow.answering)
-    dp.message.register(on_find_match, F.text.contains("Find a match"), QuestionFlow.answering)
-    dp.message.register(on_show_start_menu, F.text == "🔙 Main Menu", QuestionFlow.answering)
+    # Callback handlers for questions
+    dp.callback_query.register(on_add_question_callback, F.data == "add_question")
+    dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
+    dp.callback_query.register(on_use_corrected_text, F.data == "use_corrected")
+    dp.callback_query.register(on_use_original_text, F.data == "use_original")
+    dp.callback_query.register(on_confirm_add_question, F.data == "confirm_add_question", QuestionFlow.reviewing_question)
+    dp.callback_query.register(on_cancel_add_question, F.data == "cancel_add_question")
+    dp.callback_query.register(on_confirm_delete_question, F.data.startswith("confirm_delete_question:"), QuestionFlow.confirming_delete)
+    dp.callback_query.register(on_cancel_delete_question, F.data.startswith("cancel_delete_question:"))
+    dp.callback_query.register(on_delete_question_callback, F.data.startswith("delete_question:"))
+    dp.callback_query.register(process_answer_callback, F.data.startswith("answer:"))
+    dp.callback_query.register(on_skip_question, F.data.startswith("skip_question:"))
+    
+    # Callback handlers for matches and navigation
+    dp.callback_query.register(on_find_match_callback, F.data == "find_match")
+    dp.callback_query.register(handle_start_anon_chat, F.data.startswith("start_anon_chat:"))
+    dp.callback_query.register(handle_cancel_match, F.data == "cancel_match")
+    dp.callback_query.register(on_show_start_menu_callback, F.data == "show_start_menu")
+    
+    # Message handlers
+    dp.message.register(on_find_match, F.text == "🔍 Find a match")
+    dp.message.register(on_group_info, F.text == "📌 Group Info")
+    dp.message.register(on_instructions, F.text == "📚 Instructions")
     
     # Register direct question entry handler for any text in viewing_question or answering states
     dp.message.register(handle_direct_question_entry, ~F.text.startswith("/"), QuestionFlow.viewing_question)
     dp.message.register(handle_direct_question_entry, ~F.text.startswith("/"), QuestionFlow.answering)
     
-    # Add handlers for match confirmation
-    dp.callback_query.register(
-        handle_start_anon_chat,
-        F.data.startswith("start_anon_chat:")
-    )
-    dp.callback_query.register(
-        handle_cancel_match,
-        F.data == "cancel_match"
-    )
-    
-    # Register message handlers for FSM states
+    # State handlers
     dp.message.register(process_team_name, TeamCreation.waiting_for_name)
+    dp.message.register(process_team_description, TeamCreation.waiting_for_description)
     dp.message.register(process_invite_code, TeamJoining.waiting_for_code)
     dp.message.register(process_new_question_text, QuestionFlow.creating_question)
-    
-    # Register answer handlers
-    dp.callback_query.register(process_answer_callback, F.data.startswith("answer:"))
-    dp.callback_query.register(on_skip_question, F.data.startswith("skip_question:"))
-    
-    # Register question management handlers
-    dp.callback_query.register(on_delete_question_callback, F.data.startswith("delete_question:"))
-    dp.callback_query.register(on_confirm_delete_question, F.data.startswith("confirm_delete_question:"))
-    dp.callback_query.register(on_cancel_delete_question, F.data.startswith("cancel_delete_question:"))
-    
-    # Register confirmation handlers for add question
-    dp.callback_query.register(on_confirm_add_question, F.data == "confirm_add_question")
-    dp.callback_query.register(on_cancel_add_question, F.data == "cancel_add_question")
-    
-    # Register correction handlers
-    dp.callback_query.register(on_use_corrected_text, F.data == "use_corrected_text")
-    dp.callback_query.register(on_use_original_text, F.data == "use_original_text")
 
 
 async def process_invite_code(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
@@ -2729,4 +2753,49 @@ async def delete_user_answers_in_group(session: AsyncSession, user_id: int, grou
     )
     result = await session.execute(delete_stmt)
     return result.rowcount
+
+
+async def on_go_to_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle go to group button click."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.message.answer("Error: Team not found. Please try again.")
+        return
+    
+    # Update state with group info
+    await state.update_data(current_group_id=group_id, current_group_name=group.name)
+    await state.set_state(QuestionFlow.viewing_question)
+    
+    # Log the action
+    logger.info(f"User {callback.from_user.id} clicked Go to group button for group {group_id} ({group.name})")
+    
+    # Edit the original message to avoid having too many messages
+    try:
+        success_text = f"🎉 You're now in <b>{group.name}</b>!"
+        await callback.message.edit_text(success_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error editing message: {e}")
+        # If editing fails, send a new message
+        await callback.message.answer(f"🎉 You're now in <b>{group.name}</b>!", parse_mode="HTML")
+    
+    # Show the group menu
+    await show_group_menu(callback.message, group_id, group.name, state, session=session)
+    
+    # After showing the menu, trigger the questions view
+    await on_show_questions(callback.message, state, session)
+
+
+async def on_answer_error(callback: types.CallbackQuery, chat_id: int) -> None:
+    """Handle error in answer processing."""
+    try:
+        await callback.answer("Sorry, there was an error processing your answer.")
+        await callback.bot.send_message(chat_id, "Sorry, there was an error processing your answer.")
+    except Exception as e:
+        logger.error("Failed to send error message to user")
 
