@@ -24,7 +24,8 @@ from src.db import get_session
 from src.db.repositories import user_repo, question_repo, answer_repo, group_repo, match_repo
 from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match
 from src.bot.utils.matching import find_best_match
-from src.db.repositories.match_repo import get_match_between_users
+from src.db.repositories.match_repo import get_match_between_users, create_match
+from src.db.repositories.chat_session_repo import create_chat_session, get_by_match_id
 
 settings = get_settings() # Get settings from config
 
