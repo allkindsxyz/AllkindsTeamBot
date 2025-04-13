@@ -464,10 +464,12 @@ async def on_join_confirm(callback: types.CallbackQuery, state: FSMContext, sess
     logger.info(f"User {db_user.id} joined group {group_id} ({group.name})")
     await callback.message.answer(success_text)
     
-    # Show the group menu
+    # Update state data without showing redundant menu text
     await state.update_data(current_group_id=group_id, current_group_name=group.name)
     await state.set_state(QuestionFlow.viewing_question)
-    await show_group_menu(callback.message, group_id, group.name, state, session=session)
+    
+    # Show only the menu buttons without the redundant text
+    await show_group_menu(callback.message, group_id, group.name, state, current_section="questions", session=session)
 
 
 async def show_group_menu(message: types.Message, group_id: int, group_name: str, state: FSMContext, edit: bool = False, current_section: str = None, session: AsyncSession = None) -> None:
@@ -488,19 +490,15 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
     # Get the reply keyboard with points balance
     keyboard = get_group_menu_reply_keyboard(current_section, balance=points)
     
-    # For matches section, just show the balance
-    if current_section == "matches":
-        menu_msg = await message.answer(points_text, reply_markup=keyboard)
-        await state.update_data(group_menu_msg_id=menu_msg.message_id)
-    # Only show the full message if we're not coming from the questions view
-    elif current_section != "questions":
-        text = f"You are in <b>{group_name}</b>.\n{points_text}\nWhat would you like to do?"
-        menu_msg = await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-        # Store message ID in state so we can delete it later if needed
+    # For matches section or after joining a group, just show the balance
+    if current_section == "matches" or current_section == "questions":
+        # Just show points balance and keyboard without redundant group name
+        menu_msg = await message.answer(points_text if points_text else " ", reply_markup=keyboard)
         await state.update_data(group_menu_msg_id=menu_msg.message_id)
     else:
-        # Use a minimal visible character that Telegram will accept
-        menu_msg = await message.answer(".", reply_markup=keyboard)
+        # Show the full message for other contexts
+        text = f"You are in <b>{group_name}</b>.\n{points_text}\nWhat would you like to do?"
+        menu_msg = await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
         # Store message ID in state so we can delete it later if needed
         await state.update_data(group_menu_msg_id=menu_msg.message_id)
 
@@ -544,13 +542,13 @@ async def on_join_group_callback(callback: types.CallbackQuery, state: FSMContex
         current_group_name=group_name
     )
     
-    success_text = f"🎉 You've successfully joined <b>{group_name}</b>!\n"
+    success_text = f"🎉 You've successfully joined <b>{group_name}</b>!\n\nUse the buttons below to interact with the team."
     logger.info(f"User {callback.from_user.id} joined group {group_id} ({group_name})")
     
-    # Edit the original message to show success, then show group menu
-    await callback.message.edit_text(success_text)
-    await show_group_menu(callback.message, group_id, group_name, state, session=session)
-    await state.set_state(QuestionFlow.viewing_question) # Set default state after showing menu
+    # Edit the original message to show success, then show menu buttons only
+    await callback.message.edit_text(success_text, parse_mode="HTML")
+    await state.set_state(QuestionFlow.viewing_question)
+    await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
 
 
 # --- Placeholder handlers for group menu buttons ---
@@ -2196,7 +2194,7 @@ def register_handlers(dp: Dispatcher) -> None:
     # Callback handlers for questions
     dp.callback_query.register(on_add_question_callback, F.data == "add_question")
     dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
-    dp.callback_query.register(on_use_corrected_text, F.data == "use_corrected")
+    dp.callback_query.register(on_use_corrected_text, F.data == "use_corrected_text")
     dp.callback_query.register(on_use_original_text, F.data == "use_original")
     dp.callback_query.register(on_confirm_add_question, F.data == "confirm_add_question", QuestionFlow.reviewing_question)
     dp.callback_query.register(on_cancel_add_question, F.data == "cancel_add_question")
@@ -2510,7 +2508,7 @@ async def on_group_info(message: types.Message, state: FSMContext, session: Asyn
     
     # Create an invite link for the group
     invite_payload = f"g{group.id}"
-    invite_link = await create_start_link(message.bot, payload=invite_payload)
+    invite_link = await create_start_link(message.bot, payload=invite_payload, encode=True)
     
     # Get user info
     user_id = message.from_user.id
