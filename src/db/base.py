@@ -10,9 +10,15 @@ settings = get_settings()
 # Prioritize Railway's DATABASE_URL environment variable
 SQLALCHEMY_DATABASE_URL = os.getenv('DATABASE_URL', settings.db_url)
 
-# PostgreSQL driver correction (Railway uses postgres://, SQLAlchemy needs postgresql://)
+# PostgreSQL driver correction for asyncpg
 if SQLALCHEMY_DATABASE_URL.startswith('postgres://'):
-    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace('postgres://', 'postgresql+asyncpg://', 1)
+elif SQLALCHEMY_DATABASE_URL.startswith('postgresql://'):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace('postgresql://', 'postgresql+asyncpg://', 1)
+
+# SQLite doesn't need modification if it's detected
+if 'sqlite' in SQLALCHEMY_DATABASE_URL:
+    pass  # Keep SQLite URL as is
 
 # Naming convention for constraints
 convention = {
