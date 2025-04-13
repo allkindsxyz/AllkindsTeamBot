@@ -1,13 +1,18 @@
 from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+import os
 
 from src.core.config import get_settings
 
 settings = get_settings()
 
-# Use SQLite for development
-SQLALCHEMY_DATABASE_URL = f"sqlite+aiosqlite:///./allkinds.db"
+# Prioritize Railway's DATABASE_URL environment variable
+SQLALCHEMY_DATABASE_URL = os.getenv('DATABASE_URL', settings.db_url)
+
+# PostgreSQL driver correction (Railway uses postgres://, SQLAlchemy needs postgresql://)
+if SQLALCHEMY_DATABASE_URL.startswith('postgres://'):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
 # Naming convention for constraints
 convention = {
