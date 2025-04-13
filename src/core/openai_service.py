@@ -55,6 +55,11 @@ Important: Preserve all emojis (😊, 👍, etc.), capitalization, and punctuati
         has_errors = parsed.get("has_spelling_errors", False)
         corrected_text = parsed.get("corrected_text", text)
         
+        # Only report errors if the corrected text is actually different
+        if has_errors and corrected_text.strip() == text.strip():
+            logger.warning(f"OpenAI reported spelling errors but returned identical text. Ignoring false positive.")
+            return False, text
+        
         return has_errors, corrected_text
         
     except Exception as e:
@@ -70,6 +75,17 @@ async def is_yes_no_question(text: str) -> Tuple[bool, str]:
     if not settings.openai_api_key:
         logger.warning("OpenAI API key not set. Skipping yes/no check.")
         return True, ""  # Default to True if API key is missing
+    
+    # First, check if it's a non-English question - be more lenient with these
+    import re
+    # Check if the text contains non-Latin characters (likely non-English)
+    non_latin_pattern = re.compile(r'[^\x00-\x7F]+')
+    has_non_latin = bool(non_latin_pattern.search(text))
+    
+    # For non-English text, be extremely lenient and accept nearly everything as valid
+    if has_non_latin and '?' in text:
+        logger.info(f"Non-English question detected with question mark. Automatically accepting: '{text[:30]}...'")
+        return True, ""
     
     try:
         logger.info(f"Checking if question is yes/no: '{text[:30]}...'")
@@ -118,15 +134,33 @@ Respond in JSON format:
         if not is_valid:
             # Always accept questions that contain obvious yes/no patterns
             lower_text = text.lower()
-            yes_no_patterns = [
+            
+            # English patterns
+            english_patterns = [
                 "is it okay", "is it normal", "do you", "are you", "have you", 
-                "would you", "could you", "should you", "is this", "are there", 
-                "нормально ли", "можно ли", "хорошо ли", "ты бы", 
-                "ты считаешь", "как ты думаешь", "как ты относишься", "нормально", 
-                "правильно ли", "согласен ли", "по твоему мнению"
+                "would you", "could you", "should you", "is this", "are there",
+                "will you", "can you", "did you", "were you", "has anyone"
             ]
             
-            if any(pattern in lower_text for pattern in yes_no_patterns):
+            # Russian patterns - both formal and informal
+            russian_patterns = [
+                # Informal "you" forms
+                "ты ", " ты ", "ты?", "любишь", "хочешь", "делаешь", 
+                "следишь", "думаешь", "считаешь", "тебе", "тебя",
+                # Formal "you" forms
+                "вы ", " вы ", "вы?", "любите", "хотите", "делаете",
+                "следите", "думаете", "считаете", "вам", "вас",
+                # Question forms
+                "нормально ли", "можно ли", "хорошо ли", "правильно ли", 
+                "согласен ли", "по твоему мнению", "по вашему мнению",
+                # Common question verbs
+                "нравится", "было", "будет", "есть", "стоит"
+            ]
+            
+            # Combine all patterns
+            all_patterns = english_patterns + russian_patterns
+            
+            if any(pattern in lower_text for pattern in all_patterns) or "?" in text:
                 logger.info(f"Overriding AI decision - accepting question with yes/no pattern: '{text[:30]}...'")
                 return True, ""
         
