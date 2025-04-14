@@ -297,8 +297,28 @@ async def check_and_display_next_question(message: types.Message, db_user, group
     Returns True if a question was displayed, False otherwise.
     """
     try:
-        # Get the next unanswered question
+        # Ensure any pending changes are committed to avoid inconsistent state
+        await session.commit()
+        
+        # Get user's current answers to make sure we have up-to-date data
+        # This is critical for PostgreSQL to avoid caching issues
+        current_answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+        answered_ids = [a.question_id for a in current_answers]
+        
+        # Log answered questions to help with debugging
+        logger.info(f"User {db_user.id} has answered {len(answered_ids)} questions in group {group_id}")
+        
+        # Get the next unanswered question with a fresh query
         next_question = await question_repo.get_next_question_for_user(session, db_user.id, group_id)
+        
+        # Safety check to ensure we don't show a question that was just answered
+        # This is especially important for PostgreSQL in Railway environment
+        if next_question and next_question.id in answered_ids:
+            logger.warning(f"Question {next_question.id} was already answered by user {db_user.id} but was returned again. Skipping it.")
+            # Try to get another question by explicitly excluding this one
+            await session.refresh(next_question)  # Refresh the object from DB
+            logger.info(f"Retrying with explicit exclusion of question {next_question.id}")
+            return False  # Don't show a question, signal that none was displayed
         
         # If we found a question, display it
         if next_question:
@@ -1215,6 +1235,13 @@ async def on_skip_question(callback: types.CallbackQuery, state: FSMContext, ses
         # before we query for the next question
         await session.commit()
         
+        # For PostgreSQL in Railway environment, ensure the transaction is complete
+        try:
+            await session.flush()
+            logger.info(f"Session flushed after skipping question {question_id} by user {db_user.id}")
+        except Exception as e:
+            logger.warning(f"Error flushing session after skip: {e}")
+        
         # Get the next question for the user to answer
         # Use the question's group_id directly instead of fetching from state
         group_id = question.group_id
@@ -1935,6 +1962,21 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
             # Explicitly commit the session to make sure the answer is saved to the database
             # before we query for the next question
             await session.commit()
+            
+            # For PostgreSQL in Railway, it's important to ensure the transaction is fully completed
+            # by explicitly refreshing the answer record and flushing the session
+            try:
+                # Flush any pending operations to ensure they're sent to the database
+                await session.flush()
+                
+                # Refresh the saved answer to ensure it's properly synchronized
+                if saved_answer:
+                    await session.refresh(saved_answer)
+                
+                logger.info(f"Session flushed and answer refreshed for question {question_id} by user {db_user.id}")
+            except Exception as e:
+                logger.warning(f"Error refreshing session state: {e}")
+            
             logger.info(f"Session committed after saving answer for question {question_id} by user {db_user.id}")
             
             # Get the next question for the user to answer using our helper function
