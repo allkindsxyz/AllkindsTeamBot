@@ -2237,6 +2237,8 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
     common_questions = data.get("pending_match_common_questions", 0)
     category_scores = data.get("pending_match_category_scores", {})
     category_counts = data.get("pending_match_category_counts", {})
+    matched_user_nickname = data.get("pending_match_nickname")
+    matched_user_photo = data.get("pending_match_photo")
 
     if not matched_user_id:
         logger.warning(f"User {user_id} clicked start_anon_chat but no matched_user_id found in state.")
@@ -2314,7 +2316,12 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
         
         # Update the message with the deeplink
         match_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
-        await query.message.edit_text(match_text, reply_markup=keyboard, parse_mode="HTML")
+        
+        # If the original message was a photo message, edit the caption, otherwise edit text
+        if query.message.photo and len(query.message.photo) > 0:
+            await query.message.edit_caption(caption=match_text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await query.message.edit_text(match_text, reply_markup=keyboard, parse_mode="HTML")
         
         try:
             # Create notification for the matched user
@@ -2340,13 +2347,49 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
                 [types.InlineKeyboardButton(text="Join Anonymous Chat", url=deep_link)]
             ])
             
-            # Send notification to the matched user
-            await bot.send_message(
-                chat_id=matched_user_id,
-                text=notification_text,
-                reply_markup=recipient_keyboard,
-                parse_mode="HTML"
-            )
+            # Get initiator's nickname and photo if available
+            try:
+                initiator_nickname = None
+                initiator_photo = None
+                
+                # Get the current group
+                group_id = data.get("current_group_id")
+                if group_id:
+                    # Get the group member record for the initiator
+                    group_member = await group_repo.get_group_member(session, db_user.id, int(group_id))
+                    if group_member:
+                        initiator_nickname = getattr(group_member, "nickname", None)
+                        initiator_photo = getattr(group_member, "photo_file_id", None)
+                        logger.info(f"Found nickname '{initiator_nickname}' and photo '{initiator_photo}' for initiator {db_user.id}")
+            except Exception as e:
+                logger.warning(f"Error retrieving nickname/photo for initiator {db_user.id}: {e}")
+                # Continue without nickname/photo
+            
+            # Send notification to the matched user including initiator's photo if available
+            if initiator_photo:
+                try:
+                    await bot.send_photo(
+                        chat_id=matched_user_id,
+                        photo=initiator_photo,
+                        caption=notification_text,
+                        reply_markup=recipient_keyboard,
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.warning(f"Error sending initiator photo: {e}. Falling back to text-only notification.")
+                    await bot.send_message(
+                        chat_id=matched_user_id,
+                        text=notification_text,
+                        reply_markup=recipient_keyboard,
+                        parse_mode="HTML"
+                    )
+            else:
+                await bot.send_message(
+                    chat_id=matched_user_id,
+                    text=notification_text,
+                    reply_markup=recipient_keyboard,
+                    parse_mode="HTML"
+                )
             logger.info(f"Sent match notification to matched user {matched_user_id}")
         except Exception as e:
             logger.error(f"Failed to send match notification to matched user {matched_user_id}: {e}")
@@ -2547,12 +2590,34 @@ async def on_find_match(message: types.Message, state: FSMContext, session: Asyn
         await state.set_state(QuestionFlow.viewing_question)
         return
     
+    # Get the matched user's nickname and photo from the GroupMember table
+    matched_user_nickname = None
+    matched_user_photo = None
+    
+    try:
+        # Get the group member record for the matched user
+        group_member = await group_repo.get_group_member(session, matched_user_id, group_id)
+        if group_member:
+            matched_user_nickname = getattr(group_member, "nickname", None)
+            matched_user_photo = getattr(group_member, "photo_file_id", None)
+            logger.info(f"Found nickname '{matched_user_nickname}' and photo '{matched_user_photo}' for matched user {matched_user_id}")
+    except Exception as e:
+        logger.warning(f"Error retrieving nickname/photo for matched user {matched_user_id}: {e}")
+        # Continue without nickname/photo - this is not a critical error
+    
     # Format the cohesion score - convert from -1.0...1.0 scale to 0-100% scale
     cohesion_percentage = int(score * 100)  # Convert cohesion score to percentage
     
     # Create confirmation message with match details
     match_text = (
         f"🎉 <b>Found your most resonating team member!</b>\n\n"
+    )
+    
+    # Use nickname if available, otherwise fall back to "team member"
+    if matched_user_nickname:
+        match_text += f"<b>Nickname: {matched_user_nickname}</b>\n"
+    
+    match_text += (
         f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
         f"You share perspectives on <b>{len(common_questions)} questions</b>.\n\n"
     )
@@ -2577,6 +2642,8 @@ async def on_find_match(message: types.Message, state: FSMContext, session: Asyn
         pending_match_category_counts=category_counts,
         has_pending_match=True,  # Flag to indicate user has a pending match
         pending_match_message_id=None,  # Will be set after sending the message
+        pending_match_nickname=matched_user_nickname,
+        pending_match_photo=matched_user_photo
     )
     
     # Create confirmation keyboard
@@ -2585,8 +2652,22 @@ async def on_find_match(message: types.Message, state: FSMContext, session: Asyn
     # Delete the waiting message
     await waiting_msg.delete()
     
-    # Show confirmation message
-    match_message = await message.answer(match_text, reply_markup=keyboard, parse_mode="HTML")
+    # Show confirmation message - with photo if available
+    if matched_user_photo:
+        try:
+            match_message = await message.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=matched_user_photo,
+                caption=match_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"Sent match photo for user {matched_user_id}")
+        except Exception as e:
+            logger.warning(f"Error sending match photo: {e}. Falling back to text-only message.")
+            match_message = await message.answer(match_text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        match_message = await message.answer(match_text, reply_markup=keyboard, parse_mode="HTML")
     
     # Update the state with the match message ID
     await state.update_data(pending_match_message_id=match_message.message_id)
@@ -2781,12 +2862,33 @@ async def on_find_match_callback(
         percentage = round(best_match.similarity * 100)
         common_questions = best_match.common_questions
         
+        # Get the matched user's nickname and photo from the GroupMember table
+        matched_user_nickname = None
+        matched_user_photo = None
+        
+        try:
+            # Get the current group
+            group_id = data.get("current_group_id")
+            if group_id:
+                # Get the group member record for the matched user
+                group_member = await group_repo.get_group_member(session, matched_user.id, int(group_id))
+                if group_member:
+                    matched_user_nickname = getattr(group_member, "nickname", None)
+                    matched_user_photo = getattr(group_member, "photo_file_id", None)
+                    logger.info(f"Found nickname '{matched_user_nickname}' and photo '{matched_user_photo}' for matched user {matched_user.id}")
+        except Exception as e:
+            logger.warning(f"Error retrieving nickname/photo for matched user {matched_user.id}: {e}")
+            # Continue without nickname/photo - this is not a critical error
+        
         # Start constructing the message
         match_text = [
             f"🎯 <b>We found a match for you!</b>\n",
-            f"👤 <b>{matched_user.first_name}</b> ({percentage}% match cohesion)",
-            f"📋 Based on {common_questions} common questions\n",
         ]
+        
+        # Use nickname if available, otherwise fall back to first name
+        display_name = matched_user_nickname if matched_user_nickname else matched_user.first_name
+        match_text.append(f"👤 <b>{display_name}</b> ({percentage}% match cohesion)")
+        match_text.append(f"📋 Based on {common_questions} common questions\n")
         
         # Add category breakdown
         if best_match.category_scores:
@@ -2816,7 +2918,9 @@ async def on_find_match_callback(
             pending_match_common_questions=best_match.common_questions,
             pending_match_category_scores=best_match.category_scores,
             pending_match_category_counts=best_match.category_counts,
-            pending_match_message_id=match_message.message_id
+            pending_match_message_id=match_message.message_id,
+            pending_match_nickname=matched_user_nickname,
+            pending_match_photo=matched_user_photo
         )
         
         # Display a single menu message with the balance - only do this once to avoid flickering
