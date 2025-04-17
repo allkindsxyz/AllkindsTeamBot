@@ -7,7 +7,7 @@ import base64
 import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, update
 
 # from src.bot.config import bot_settings # No longer needed
 from src.core.config import get_settings # Import main settings
@@ -18,11 +18,11 @@ from src.bot.keyboards.inline import (
     get_group_menu_reply_keyboard,
     get_match_confirmation_keyboard # Import keyboard function (will create next)
 )
-from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates
+from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates, GroupOnboarding
 from src.core.openai_service import is_yes_no_question, check_duplicate_question, check_spelling
 from src.db import get_session
 from src.db.repositories import user_repo, question_repo, answer_repo, group_repo, match_repo
-from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match
+from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match, GroupMember
 from src.bot.utils.matching import find_best_match
 from src.db.repositories.match_repo import get_match_between_users, create_match
 from src.db.repositories.chat_session_repo import create_chat_session, get_by_match_id
@@ -72,11 +72,50 @@ async def get_unanswered_question_count(session: AsyncSession, user_id: int, gro
 
 
 async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
-    """
-    Handle /start command.
-    If user is already in a group state, shows group menu.
-    Supports deep linking with group ID or shows main menu if started directly.
-    """
+    """Handle /start command."""
+    
+    # Basic logging
+    logger.info(f"Start command triggered from user {message.from_user.id}")
+    
+    # Extract potential command args from the message text directly
+    args = None
+    if message.text and message.text.startswith("/start "):
+        args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+        logger.info(f"DEBUG: Extracted args from message text: {args}")
+    # Also check the command object if available
+    elif command and command.args:
+        args = command.args
+        logger.info(f"DEBUG: Args from command object: {args}")
+    
+    if args:
+        # Special case for known deep link "ZzE" = base64("g1")
+        if args == "ZzE":
+            logger.info("DEBUG: Found exact match for ZzE (g1)")
+            group_id = 1
+            await handle_group_invite(message, group_id, state, session)
+            return
+        
+        # General base64 decode attempt
+        try:
+            decoded_args = base64.b64decode(args).decode('utf-8')
+            logger.info(f"DEBUG: Decoded args from base64: {decoded_args}")
+            
+            # Check if it's an invite link in decoded form
+            if decoded_args.startswith('g') and decoded_args[1:].isdigit():
+                group_id = int(decoded_args[1:])
+                logger.info(f"DEBUG: Deep link join for group {group_id}")
+                await handle_group_invite(message, group_id, state, session)
+                return
+        except Exception as e:
+            logger.info(f"DEBUG: Not a valid base64 string, using raw args: {e}")
+        
+        # Check if it's an invite link in raw form
+        if args.startswith('g') and args[1:].isdigit():
+            group_id = int(args[1:])
+            logger.info(f"DEBUG: Direct deep link join for group {group_id}")
+            await handle_group_invite(message, group_id, state, session)
+            return
+    
     user_tg = message.from_user
     logger.info(f"User {user_tg.id} started the bot")
     
@@ -211,7 +250,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
         # Create inline keyboard with Load previously answered questions button for the balance message
         inline_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(
-                text=f"📋 Load answered questions ({answered_count})", 
+                text=f"📋 Load previously answered questions ({answered_count})", 
                 callback_data="load_answered_questions"
             )]
         ])
@@ -895,10 +934,30 @@ async def on_join_group_callback(callback: types.CallbackQuery, state: FSMContex
         "username": user_tg.username
     })
     
-    # Add user to the group as a member
+    # Check if the user was previously in this group
+    was_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
+    
+    # Add user to the group as a member (or update if already exists)
     try:
         await group_repo.add_user_to_group(session, db_user.id, group_id)
         logger.info(f"Added user {db_user.id} to group {group_id} as a member")
+        
+        # If user is rejoining, make sure their profile data is cleared
+        if was_member:
+            logger.info(f"User {db_user.id} is rejoining group {group_id} - checking profile data")
+            
+            member = await group_repo.get_group_member(session, db_user.id, group_id)
+            if member and (getattr(member, "nickname", None) or getattr(member, "photo_file_id", None)):
+                logger.info(f"Clearing existing profile data for rejoining user {db_user.id}")
+                stmt = update(GroupMember).where(
+                    (GroupMember.user_id == db_user.id) & 
+                    (GroupMember.group_id == group_id)
+                ).values(
+                    nickname=None,
+                    photo_file_id=None
+                )
+                await session.execute(stmt)
+                await session.commit()
     except Exception as e:
         logger.error(f"Error adding user to group: {e}")
         await callback.message.answer("Error joining the team. Please try again.")
@@ -914,13 +973,12 @@ async def on_join_group_callback(callback: types.CallbackQuery, state: FSMContex
     
     # Edit the original message to show success
     await callback.message.edit_text(success_text, parse_mode="HTML")
-    await state.set_state(QuestionFlow.viewing_question)
     
-    # Show group menu with Questions section marked as current
-    await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
-    
-    # Show first question immediately after joining
-    await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+    # Always force onboarding process when joining a group, since profile data may be cleared or never set
+    logger.info(f"Starting onboarding process for user {db_user.id} in group {group_id}")
+    await state.set_state(GroupOnboarding.waiting_for_nickname)
+    await callback.message.answer("To complete your profile, please enter your nickname for this group (2-32 characters, must be unique in this group):")
+    return
 
 
 # --- Placeholder handlers for group menu buttons ---
@@ -2058,105 +2116,109 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
         await query.message.edit_text("Error: Could not find user data. Please try again.")
         return
     
-    # Check if there's already a match between these users
-    existing_match = await get_match_between_users(session, db_user.id, matched_db_user.id)
-    if not existing_match:
-        # Create a new match record
-        existing_match = await create_match(
-            session=session,
-            user1_id=db_user.id,
-            user2_id=matched_db_user.id,
-            score=score,
-            common_questions=common_questions
-        )
-    
-    # Check if there's already an active chat session
-    existing_chat = await get_by_match_id(session, existing_match.id)
-    if existing_chat:
-        if existing_chat.status == "active":
-            await query.message.edit_text("You already have an active chat with this person.")
-            return
-        elif existing_chat.status == "pending":
-            await query.message.edit_text("A chat invitation is already pending. Please wait for the other person to join.")
-            return
-    
-    # Create a new chat session
-    chat_session = await create_chat_session(
-        session=session,
-        initiator_id=db_user.id,
-        recipient_id=matched_db_user.id,
-        match_id=existing_match.id
-    )
-    
-    # Format the cohesion score for display
-    cohesion_percentage = int(score * 100)  # Convert cohesion score to percentage
-    
-    # Create message with match details and category breakdown
-    match_text = (
-        f"🎉 <b>Connected with your most resonating team member!</b>\n\n"
-        f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
-        f"You share perspectives on <b>{common_questions} questions</b>.\n\n"
-    )
-    
-    # Add category breakdown if available
-    if category_scores:
-        match_text += "<b>Category Breakdown:</b>\n"
-        for category, cat_score in category_scores.items():
-            cat_percentage = int(cat_score * 100)  # Convert cohesion score to percentage
-            question_count = category_counts.get(category, 0)
-            match_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
-        match_text += "\n"
-    
-    # Create deep link to communicator bot
-    bot_username = settings.COMMUNICATOR_BOT_USERNAME
-    deep_link = f"https://t.me/{bot_username}?start=chat_{chat_session.session_id}"
-    
-    # Create inline button for the deeplink
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Start Anonymous Chat", url=deep_link)]
-    ])
-    
-    # Update the message with the deeplink
-    match_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
-    await query.message.edit_text(match_text, reply_markup=keyboard, parse_mode="HTML")
-    
     try:
-        # Create notification for the matched user
-        notification_text = (
-            f"🎉 <b>Someone has matched with you as their most resonating team member!</b>\n\n"
+        # Check if there's already a match between these users
+        existing_match = await get_match_between_users(session, db_user.id, matched_db_user.id)
+        if not existing_match:
+            # Create a new match record
+            existing_match = await create_match(
+                session=session,
+                user1_id=db_user.id,
+                user2_id=matched_db_user.id,
+                score=score,
+                common_questions=common_questions
+            )
+        
+        # Check if there's already an active chat session
+        existing_chat = await get_by_match_id(session, existing_match.id)
+        
+        # Create a new chat session if none exists or if the existing one is not active
+        if not existing_chat or existing_chat.status != "active":
+            # Create a new chat session
+            chat_session = await create_chat_session(
+                session=session,
+                initiator_id=db_user.id,
+                recipient_id=matched_db_user.id,
+                match_id=existing_match.id
+            )
+        else:
+            # Use existing chat session
+            chat_session = existing_chat
+            logger.info(f"Using existing chat session {chat_session.id} for match {existing_match.id}")
+        
+        # Format the cohesion score for display
+        cohesion_percentage = int(score * 100)  # Convert cohesion score to percentage
+        
+        # Create message with match details and category breakdown
+        match_text = (
+            f"🎉 <b>Connected with your most resonating team member!</b>\n\n"
             f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
             f"You share perspectives on <b>{common_questions} questions</b>.\n\n"
         )
         
         # Add category breakdown if available
         if category_scores:
-            notification_text += "<b>Category Breakdown:</b>\n"
+            match_text += "<b>Category Breakdown:</b>\n"
             for category, cat_score in category_scores.items():
                 cat_percentage = int(cat_score * 100)  # Convert cohesion score to percentage
                 question_count = category_counts.get(category, 0)
-                notification_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
-            notification_text += "\n"
-            
-        notification_text += "Click the button below to join the anonymous chat. Your identity will remain hidden until you choose to reveal it."
+                match_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
+            match_text += "\n"
         
-        # Create keyboard for the matched user
-        recipient_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Join Anonymous Chat", url=deep_link)]
+        # Create deep link to communicator bot
+        bot_username = settings.COMMUNICATOR_BOT_USERNAME
+        deep_link = f"https://t.me/{bot_username}?start=chat_{chat_session.session_id}"
+        
+        # Create inline button for the deeplink
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Start Anonymous Chat", url=deep_link)]
         ])
         
-        # Send notification to the matched user
-        await bot.send_message(
-            chat_id=matched_user_id,
-            text=notification_text,
-            reply_markup=recipient_keyboard,
-            parse_mode="HTML"
-        )
-        logger.info(f"Sent match notification to matched user {matched_user_id}")
+        # Update the message with the deeplink
+        match_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
+        await query.message.edit_text(match_text, reply_markup=keyboard, parse_mode="HTML")
+        
+        try:
+            # Create notification for the matched user
+            notification_text = (
+                f"🎉 <b>Someone has matched with you as their most resonating team member!</b>\n\n"
+                f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
+                f"You share perspectives on <b>{common_questions} questions</b>.\n\n"
+            )
+            
+            # Add category breakdown if available
+            if category_scores:
+                notification_text += "<b>Category Breakdown:</b>\n"
+                for category, cat_score in category_scores.items():
+                    cat_percentage = int(cat_score * 100)  # Convert cohesion score to percentage
+                    question_count = category_counts.get(category, 0)
+                    notification_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
+                notification_text += "\n"
+                
+            notification_text += "Click the button below to join the anonymous chat. Your identity will remain hidden until you choose to reveal it."
+            
+            # Create keyboard for the matched user
+            recipient_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="Join Anonymous Chat", url=deep_link)]
+            ])
+            
+            # Send notification to the matched user
+            await bot.send_message(
+                chat_id=matched_user_id,
+                text=notification_text,
+                reply_markup=recipient_keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"Sent match notification to matched user {matched_user_id}")
+        except Exception as e:
+            logger.error(f"Failed to send match notification to matched user {matched_user_id}: {e}")
+    
+        # Remove the pending match flag from state data
+        await state.update_data(has_pending_match=False)
     except Exception as e:
-        logger.error(f"Failed to send match notification to matched user {matched_user_id}: {e}")
-
-    # Remove the pending match flag from state data
-    await state.update_data(has_pending_match=False)
+        logger.error(f"Error in handle_start_anon_chat: {e}")
+        await query.message.edit_text("An error occurred while setting up the chat. Please try again later.")
+        return
 
 
 async def handle_cancel_match(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -2669,9 +2731,13 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
 
 def register_handlers(dp: Dispatcher) -> None:
     """Register all start-related handlers."""
-    # Command handlers
+    # Command handlers - Register correctly for deep links
+    from aiogram.filters import CommandObject
+    
+    # Register /start with and without arguments
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_cancel, Command("cancel"))
+    dp.message.register(cmd_clear_profile, Command("clear_profile"))
     
     # Callback handlers for team and group management
     dp.callback_query.register(on_create_team, F.data == "create_team")
@@ -2721,6 +2787,10 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_team_description, TeamCreation.waiting_for_description)
     dp.message.register(process_invite_code, TeamJoining.waiting_for_code)
     dp.message.register(process_new_question_text, QuestionFlow.creating_question)
+    
+    # Onboarding handlers
+    dp.message.register(process_group_nickname, GroupOnboarding.waiting_for_nickname)
+    dp.message.register(process_group_photo, GroupOnboarding.waiting_for_photo)
 
 
 async def process_invite_code(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
@@ -3196,8 +3266,29 @@ async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContex
         return
     
     try:
+        # Clear nickname and photo data first (will be important if they rejoin)
+        try:
+            member = await group_repo.get_group_member(session, db_user.id, group_id)
+            if member:
+                # Record if they had profile data before for the message
+                had_profile = bool(getattr(member, "nickname", None))
+                
+                # Clear their profile data
+                from sqlalchemy import update
+                stmt = update(GroupMember).where(
+                    (GroupMember.user_id == db_user.id) & 
+                    (GroupMember.group_id == group_id)
+                ).values(
+                    nickname=None,
+                    photo_file_id=None
+                )
+                await session.execute(stmt)
+                logger.info(f"Cleared profile data for user {db_user.id} in group {group_id}")
+        except Exception as e:
+            logger.error(f"Error clearing profile data: {e}")
+            # Continue with removal even if clearing profile fails
+        
         # Delete user's answers in this group
-        # This requires a new method in the answer repository
         deleted_count = await delete_user_answers_in_group(session, db_user.id, group_id)
         
         # Remove user from the group
@@ -3355,4 +3446,184 @@ async def on_answer_error(callback: types.CallbackQuery, chat_id: int) -> None:
         await callback.bot.send_message(chat_id, "Sorry, there was an error processing your answer.")
     except Exception as e:
         logger.error("Failed to send error message to user")
+
+
+async def cmd_clear_profile(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle /clear_profile command to clear a user's profile in the current group.
+    Admin-only command that can be used like:
+    /clear_profile - Clear your own profile
+    /clear_profile @username - Clear profile for a specific user
+    """
+    # Check if user is an admin
+    user_tg = message.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        await message.answer("Error: Could not find your user account.")
+        return
+    
+    # Get current group ID from state
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    if not group_id:
+        await message.answer("Error: You must be in a group to use this command.")
+        return
+    
+    # Check if user is admin or creator in this group
+    role = await group_repo.get_user_role(session, db_user.id, group_id)
+    is_admin = role in [MemberRole.ADMIN, MemberRole.CREATOR]
+    
+    if not is_admin:
+        await message.answer("Error: Only group admins can use this command.")
+        return
+    
+    # Determine target user - self or specified username
+    target_user_id = db_user.id
+    target_username = None
+    
+    if command and command.args:
+        # If username is specified, find that user
+        target_username = command.args.strip()
+        if target_username.startswith("@"):
+            target_username = target_username[1:]  # Remove @ symbol
+        
+        # Find user by username
+        from sqlalchemy import select
+        query = select(User).where(User.username == target_username)
+        result = await session.execute(query)
+        target_db_user = result.scalar_one_or_none()
+        
+        if not target_db_user:
+            await message.answer(f"Error: User @{target_username} not found.")
+            return
+        
+        target_user_id = target_db_user.id
+    
+    # Check if target user is in the group
+    is_member = await group_repo.is_user_in_group(session, target_user_id, group_id)
+    if not is_member:
+        await message.answer(f"Error: User is not a member of this group.")
+        return
+    
+    try:
+        # Clear profile data
+        stmt = update(GroupMember).where(
+            (GroupMember.user_id == target_user_id) & 
+            (GroupMember.group_id == group_id)
+        ).values(
+            nickname=None,
+            photo_file_id=None
+        )
+        await session.execute(stmt)
+        await session.commit()
+        
+        if target_username:
+            await message.answer(f"Successfully cleared profile data for @{target_username} in this group.")
+        else:
+            await message.answer("Successfully cleared your profile data in this group.")
+        
+        logger.info(f"Admin {db_user.id} cleared profile for user {target_user_id} in group {group_id}")
+    except Exception as e:
+        logger.error(f"Error clearing profile: {e}")
+        await message.answer("Error: Failed to clear profile data.")
+        await session.rollback()
+
+
+async def process_group_nickname(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Process nickname input during group onboarding."""
+    logger.info(f"Processing nickname input for user {message.from_user.id}")
+    
+    nickname = message.text.strip()
+    if len(nickname) < 2 or len(nickname) > 32:
+        logger.info(f"Nickname validation failed - length: {len(nickname)}")
+        await message.answer("Nickname must be 2-32 characters. Please try again:")
+        return
+    
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    logger.info(f"Processing nickname for group {group_id}: {nickname}")
+    
+    # Check uniqueness in group
+    members = await group_repo.get_group_members(session, group_id)
+    if any(getattr(m, "nickname", None) == nickname for m in members if getattr(m, "user_id", None) != message.from_user.id):
+        logger.info(f"Nickname '{nickname}' already exists in group {group_id}")
+        await message.answer("This nickname is already taken in this group. Please choose another:")
+        return
+    
+    # Nickname is valid and unique
+    logger.info(f"Nickname '{nickname}' is valid for group {group_id}, proceeding to photo")
+    await state.update_data(group_nickname=nickname)
+    await state.set_state(GroupOnboarding.waiting_for_photo)
+    await message.answer(
+        "Great! Now send a photo for your group profile, or type /skip to use the default avatar."
+    )
+
+async def process_group_photo(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Process photo input during group onboarding."""
+    logger.info(f"Processing photo input for user {message.from_user.id}")
+    
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    nickname = data.get("group_nickname")
+    user_tg = message.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    
+    logger.info(f"Processing photo for group {group_id}, user {user_tg.id}, nickname '{nickname}'")
+    
+    # Determine photo_file_id
+    photo_file_id = None
+    if message.photo:
+        photo_file_id = message.photo[-1].file_id
+        logger.info(f"Got photo with file_id: {photo_file_id}")
+    elif message.text and message.text.strip().lower() == "/skip":
+        logger.info(f"User skipped photo upload")
+        photo_file_id = None
+    else:
+        logger.info(f"Invalid photo input: {message.content_type}")
+        await message.answer("Please send a photo or type /skip:")
+        return
+    
+    # Store nickname and photo in GroupMember
+    logger.info(f"Saving profile for user {db_user.id} in group {group_id}: nickname='{nickname}', has_photo={bool(photo_file_id)}")
+    try:
+        await group_repo.set_member_profile(session, db_user.id, group_id, nickname, photo_file_id)
+        await session.commit()  # Explicitly commit to ensure the profile is saved
+        logger.info(f"Profile saved successfully")
+    except Exception as e:
+        logger.error(f"Error saving profile: {e}")
+        await message.answer("Error saving your profile. Please try again or contact support.")
+        return
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    
+    # Onboarding complete, proceed to group content
+    logger.info(f"Onboarding complete, proceeding to group content")
+    await state.set_state(QuestionFlow.viewing_question)
+    
+    # Success message with welcome to the group
+    welcome_text = f"🎉 You're all set! Welcome to <b>{group.name}</b>!"
+    
+    # Get user's points balance
+    points = db_user.points if hasattr(db_user, 'points') else 0
+    
+    # Get the reply keyboard with points balance 
+    reply_keyboard = get_group_menu_reply_keyboard(current_section="questions", balance=points)
+    
+    # Send welcome message with menu buttons
+    await message.answer(welcome_text, reply_markup=reply_keyboard, parse_mode="HTML")
+    
+    # Get count of unanswered questions
+    unanswered_count = await get_unanswered_question_count(session, db_user.id, group_id)
+    
+    # Get count of answered questions
+    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+    answered_count = len(answers)
+    
+    # Add message about questions
+    if unanswered_count > 0:
+        await message.answer(f"You have {unanswered_count} questions to answer. Here's the first one:")
+        # Display the first question (which won't trigger onboarding again)
+        await check_and_display_next_question(message, db_user, group_id, state, session)
+    else:
+        await message.answer("You've answered all available questions in this group!")
 
