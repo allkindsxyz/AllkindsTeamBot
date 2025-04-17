@@ -336,6 +336,10 @@ async def check_and_display_next_question(message: types.Message, db_user, group
     Returns True if a question was displayed, False otherwise.
     """
     try:
+        # Get user state data
+        data = await state.get_data()
+        last_displayed_question_id = data.get("last_displayed_question_id")
+        
         # Ensure any pending changes are committed to avoid inconsistent state
         await session.commit()
         
@@ -349,6 +353,16 @@ async def check_and_display_next_question(message: types.Message, db_user, group
         
         # Get the next unanswered question with a fresh query
         next_question = await question_repo.get_next_question_for_user(session, db_user.id, group_id)
+        
+        # Skip if this question was just displayed (e.g., after adding a new question)
+        if next_question and next_question.id == last_displayed_question_id:
+            logger.info(f"Skipping question {next_question.id} as it was just displayed for user {db_user.id}")
+            
+            # Try to get another question
+            excluded_ids = [last_displayed_question_id]
+            next_question = await question_repo.get_next_question_for_user(
+                session, db_user.id, group_id, excluded_ids=excluded_ids
+            )
         
         # Safety check to ensure we don't show a question that was just answered
         # This is especially important for PostgreSQL in Railway environment
@@ -1725,10 +1739,16 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=current_rows)
         
         # Send the new question - just the text without quotes
-        await callback.bot.send_message(
+        question_msg = await callback.bot.send_message(
             chat_id=callback.message.chat.id,
             text=new_question.text,
             reply_markup=keyboard
+        )
+        
+        # Store the question ID in state to prevent showing it again
+        await state.update_data(
+            last_displayed_question_id=new_question.id,
+            last_displayed_question_message_id=question_msg.message_id
         )
         
         # Set state back to viewing question

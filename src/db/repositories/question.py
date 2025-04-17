@@ -39,7 +39,7 @@ class QuestionRepository(BaseRepository[Question]):
         return question
 
     async def get_next_question_for_user(
-        self, session: AsyncSession, user_id: int, group_id: int
+        self, session: AsyncSession, user_id: int, group_id: int, excluded_ids: list[int] = None
     ) -> Question | None:
         """Gets the next unanswered question for a user in a group."""
         # Force a refresh of the session to ensure we have the latest data
@@ -48,7 +48,11 @@ class QuestionRepository(BaseRepository[Question]):
             await session.commit()  # Commit any pending changes
         except Exception as e:
             logger.warning(f"Error committing session before get_next_question_for_user: {e}")
-            
+        
+        # Initialize excluded_ids if None
+        if excluded_ids is None:
+            excluded_ids = []
+        
         # Get all answers from this user for questions in this group
         # to find questions they haven't answered yet
         try:
@@ -77,14 +81,18 @@ class QuestionRepository(BaseRepository[Question]):
             answered_ids = answered_ids_result.scalars().all()
             logger.info(f"User {user_id} has answered these questions in group {group_id}: {answered_ids}")
             
+            # Combine answered IDs with explicitly excluded IDs
+            all_excluded_ids = list(answered_ids) + excluded_ids
+            logger.info(f"Excluding questions with IDs: {all_excluded_ids}")
+            
             # Select questions that are active, in the specified group,
-            # and not in the list of questions the user has already answered
+            # and not in the list of questions the user has already answered or excluded
             query = (
                 select(Question)
                 .where(
                     Question.group_id == group_id,
                     Question.is_active == True,
-                    ~Question.id.in_(select(answered_subquery.c.question_id))
+                    ~Question.id.in_(all_excluded_ids)
                 )
                 .order_by(Question.created_at.asc())  # Show questions by creation date (oldest first)
                 .limit(1)  # Just get one question
