@@ -326,8 +326,35 @@ async def display_single_question(message: types.Message, question, db_user, ses
         # Send the question and get the sent message object
         sent_msg = await message.answer(question_text, reply_markup=keyboard)
         logger.info(f"Successfully displayed question {question.id} for user {db_user.id}, message ID: {sent_msg.message_id}")
+        
+        # Store the message ID in state for future reference
+        await state.update_data(
+            last_question_message_id=sent_msg.message_id,
+            current_displayed_question_id=question.id
+        )
+        
+        return sent_msg
     except Exception as e:
         logger.error(f"Error displaying question {question.id} to user {db_user.id}: {e}", exc_info=True)
+        return None
+
+
+async def cleanup_previous_questions(message: types.Message, state: FSMContext) -> None:
+    """Clean up previously displayed unanswered question messages from the chat."""
+    data = await state.get_data()
+    last_question_message_id = data.get("last_question_message_id")
+    last_answered_msg_id = data.get("last_answered_msg_id")  # We don't want to delete this
+    
+    # Only delete if it exists and is not the most recently answered question
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete message {last_question_message_id}: {e}")
 
 
 async def check_and_display_next_question(message: types.Message, db_user, group_id: int, state: FSMContext, session: AsyncSession) -> bool:
@@ -339,6 +366,8 @@ async def check_and_display_next_question(message: types.Message, db_user, group
         # Get user state data
         data = await state.get_data()
         last_displayed_question_id = data.get("last_displayed_question_id")
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        no_questions_shown = data.get("no_questions_shown", False)
         
         # Ensure any pending changes are committed to avoid inconsistent state
         await session.commit()
@@ -350,18 +379,41 @@ async def check_and_display_next_question(message: types.Message, db_user, group
         
         # Log answered questions to help with debugging
         logger.info(f"User {db_user.id} has answered {len(answered_ids)} questions in group {group_id}")
+        logger.info(f"Recently shown questions: {recently_shown_questions}")
         
-        # Get the next unanswered question with a fresh query
-        next_question = await question_repo.get_next_question_for_user(session, db_user.id, group_id)
+        # Get the total number of available questions for user in this group
+        all_questions_query = select(Question).where(
+            Question.group_id == group_id,
+            Question.is_active == True
+        )
+        all_questions_result = await session.execute(all_questions_query)
+        all_questions = all_questions_result.scalars().all()
+        total_available = len([q for q in all_questions if q.id not in answered_ids])
         
-        # Skip if this question was just displayed (e.g., after adding a new question)
-        if next_question and next_question.id == last_displayed_question_id:
-            logger.info(f"Skipping question {next_question.id} as it was just displayed for user {db_user.id}")
-            
-            # Try to get another question
-            excluded_ids = [last_displayed_question_id]
+        # If we've shown all questions, reset the recently shown list
+        if len(recently_shown_questions) >= total_available:
+            recently_shown_questions = []
+            logger.info(f"Reset recently shown questions list for user {db_user.id} as all available questions have been shown")
+        
+        # Get the next unanswered question with a fresh query, excluding recently shown ones
+        next_question = await question_repo.get_next_question_for_user(
+            session,
+            db_user.id,
+            group_id,
+            excluded_ids=recently_shown_questions
+        )
+        
+        # If no questions available when excluding recently shown ones,
+        # but there are unanswered questions, try again without the exclusion
+        if not next_question and total_available > 0:
+            logger.info(f"No new questions for user {db_user.id}, showing previously seen ones")
+            # Only exclude the very last shown question to avoid immediate repetition
+            last_shown = [last_displayed_question_id] if last_displayed_question_id else []
             next_question = await question_repo.get_next_question_for_user(
-                session, db_user.id, group_id, excluded_ids=excluded_ids
+                session,
+                db_user.id,
+                group_id,
+                excluded_ids=last_shown
             )
         
         # Safety check to ensure we don't show a question that was just answered
@@ -375,15 +427,44 @@ async def check_and_display_next_question(message: types.Message, db_user, group
         
         # If we found a question, display it
         if next_question:
+            # Reset the "no questions shown" flag since we have a question to show
+            if no_questions_shown:
+                await state.update_data(no_questions_shown=False)
+                
+            # Clean up previous unanswered question messages to avoid having multiple unanswered questions
+            await cleanup_previous_questions(message, state)
+                
             await display_single_question(message, next_question, db_user, session)
             logger.info(f"Displayed next question {next_question.id} for user {db_user.id} in group {group_id}")
+            
+            # Update recently shown questions (keep up to 50 most recent questions)
+            if next_question.id not in recently_shown_questions:
+                recently_shown_questions.append(next_question.id)
+                # Keep the list at a reasonable size
+                if len(recently_shown_questions) > 50:
+                    recently_shown_questions = recently_shown_questions[-50:]
+            
+            # Update state with the question we just displayed
+            await state.update_data(
+                last_displayed_question_id=next_question.id,
+                recently_shown_questions=recently_shown_questions
+            )
+            
             return True
         else:
-            # No more questions to answer, show a message
-            no_questions_msg = await message.answer("No more questions from people at the moment")
-            # Store the message ID so we can delete it later if needed
-            await state.update_data(no_questions_msg_id=no_questions_msg.message_id)
-            logger.info(f"No more questions for user {db_user.id} in group {group_id}, displayed 'no questions' message")
+            # No more questions to answer
+            # Only show the message if we haven't shown it before
+            if not no_questions_shown:
+                no_questions_msg = await message.answer("No more questions from people at the moment")
+                # Store the message ID so we can delete it later if needed
+                await state.update_data(
+                    no_questions_msg_id=no_questions_msg.message_id,
+                    no_questions_shown=True
+                )
+                logger.info(f"No more questions for user {db_user.id} in group {group_id}, displayed 'no questions' message")
+            else:
+                logger.info(f"No more questions for user {db_user.id} in group {group_id}, 'no questions' message already shown")
+            
             return False
     except Exception as e:
         logger.error(f"Error checking/displaying next question for user {db_user.id}: {e}", exc_info=True)
@@ -1650,10 +1731,23 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
     original_question_message_id = user_data.get("original_question_message_id")
     confirmation_message_id = user_data.get("confirmation_message_id")
     validation_msg_id = user_data.get("validation_msg_id")
+    last_question_message_id = user_data.get("last_question_message_id")
+    last_answered_msg_id = user_data.get("last_answered_msg_id")  # We don't want to delete this
     
     if not question_text or not group_id:
         await callback.answer("Error: Missing question text or group ID", show_alert=True)
         return
+    
+    # Clean up any existing unanswered question messages to avoid multiple unanswered questions
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete previous unanswered question message: {e}")
     
     # Get user from DB
     user_tg = callback.from_user
@@ -1745,10 +1839,22 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
             reply_markup=keyboard
         )
         
+        # Get current recently shown questions
+        data = await state.get_data()
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        
+        # Add the new question to recently shown list
+        if new_question.id not in recently_shown_questions:
+            recently_shown_questions.append(new_question.id)
+            # Keep the list at a reasonable size
+            if len(recently_shown_questions) > 50:
+                recently_shown_questions = recently_shown_questions[-50:]
+        
         # Store the question ID in state to prevent showing it again
         await state.update_data(
             last_displayed_question_id=new_question.id,
-            last_displayed_question_message_id=question_msg.message_id
+            last_displayed_question_message_id=question_msg.message_id,
+            recently_shown_questions=recently_shown_questions
         )
         
         # Set state back to viewing question
@@ -2057,6 +2163,9 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
             
             logger.info(f"Session committed after saving answer for question {question_id} by user {db_user.id}")
             
+            # Remove the scheduled deletion - we want to keep answered questions visible
+            # asyncio.create_task(delayed_message_deletion(callback.message, 2))
+            
             # Get the next question for the user to answer using our helper function
             # Use the question's group_id directly instead of fetching from state
             group_id = question.group_id
@@ -2080,6 +2189,15 @@ async def process_answer_callback(callback: types.CallbackQuery, state: FSMConte
             chat_id = callback.message.chat.id
             await callback.bot.send_message(chat_id, "Sorry, there was an error processing your answer.")
             logger.error("Failed to send error message to user")
+
+async def delayed_message_deletion(message, delay_seconds=2):
+    """Delete a message after a specified delay"""
+    try:
+        await asyncio.sleep(delay_seconds)
+        await message.delete()
+        logger.info(f"Deleted message {message.message_id} after {delay_seconds} seconds")
+    except Exception as e:
+        logger.warning(f"Failed to delete message {message.message_id}: {e}")
 
 
 async def show_beta_message(message: types.Message) -> None:
