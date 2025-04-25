@@ -478,23 +478,58 @@ async def start_bot() -> None:
             logging.info(f"Expected webhook URL: {test_url}")
             
             # Keep the application running indefinitely with a more robust approach
-            # We'll log periodically to show we're still alive
-            while True:
-                logging.info("Bot is still running...")
-                
-                # Check if webhook is still set correctly
-                try:
-                    webhook_info = await bot.get_webhook_info()
-                    logging.info(f"Current webhook: {webhook_info.url}")
-                    logging.info(f"Pending updates: {webhook_info.pending_update_count}")
-                    
-                    # Test connection to Telegram
-                    me = await bot.get_me()
-                    logging.info(f"Bot info: id={me.id}, username={me.username}")
-                except Exception as e:
-                    logging.error(f"Error in webhook check: {e}")
-                
-                await asyncio.sleep(300)  # Log every 5 minutes
+            # Create a "stay alive" task that continuously pings the health endpoint
+            async def stay_alive():
+                """Keep the application alive by continuously checking its health"""
+                while True:
+                    try:
+                        # Log status every 5 minutes
+                        logging.info(f"Bot health check - {datetime.now().isoformat()}")
+                        
+                        # Check webhook info
+                        webhook_info = await bot.get_webhook_info()
+                        logging.info(f"Webhook URL: {webhook_info.url}")
+                        logging.info(f"Pending updates: {webhook_info.pending_update_count}")
+                        
+                        if webhook_info.last_error_message:
+                            logging.error(f"Webhook error: {webhook_info.last_error_message}")
+                            # If there's a webhook error, try to reset it
+                            if webhook_info.url != test_url:
+                                logging.warning("Webhook URL mismatch, attempting to reset...")
+                                await bot.delete_webhook()
+                                await asyncio.sleep(1)
+                                await bot.set_webhook(
+                                    url=test_url,
+                                    drop_pending_updates=True,
+                                    allowed_updates=["message", "callback_query"],
+                                    max_connections=100
+                                )
+                                logging.info("Webhook reset attempted")
+                        
+                        # Check bot connection
+                        me = await bot.get_me()
+                        logging.info(f"Bot @{me.username} is active and connected to Telegram")
+                        
+                        # Add some CPU work to keep the process alive
+                        # This prevents the process from being completely idle
+                        sum_result = 0
+                        for i in range(1000):
+                            sum_result += i
+                        
+                        # Sleep for 5 minutes
+                        await asyncio.sleep(300)
+                    except Exception as e:
+                        logging.error(f"Stay alive task error: {e}")
+                        logging.exception("Stay alive exception details:")
+                        # Sleep for 1 minute before retrying if there was an error
+                        await asyncio.sleep(60)
+            
+            # Create a background task to keep the application alive
+            keep_alive_task = asyncio.create_task(stay_alive())
+            
+            # Wait indefinitely (this is crucial for Railway to see the process as active)
+            await asyncio.Event().wait()
+            
         except Exception as e:
             logging.critical(f"Failed to start web server: {e}")
             logging.exception("Web server startup error details:")
