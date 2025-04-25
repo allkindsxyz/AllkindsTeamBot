@@ -3304,7 +3304,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_load_answered_questions, F.data.startswith("load_answered_questions"))
     
     # Delete Question
-    dp.callback_query.register(on_delete_question_callback, F.data.startswith("delete_question_callback"))
+    dp.callback_query.register(on_delete_question, F.data.startswith("delete_question_callback"))
     
     # Create Team
     dp.callback_query.register(on_create_team, F.data == "create_team")
