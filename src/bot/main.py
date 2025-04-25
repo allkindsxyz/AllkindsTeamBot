@@ -1,6 +1,5 @@
 """
-Minimal implementation of Telegram bot with only essential functionality.
-Just enough to respond to /start and stay alive with health check endpoint.
+Enhanced implementation of Telegram bot with full functionality.
 """
 
 import os
@@ -9,11 +8,18 @@ import json
 import logging
 import asyncio
 import time
+import traceback
 from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
+
+from src.core.config import get_settings
+from src.bot.handlers import register_handlers
+from src.bot.middlewares import DbSessionMiddleware
+from src.bot.middlewares.logging_middleware import StateLoggingMiddleware
+from src.db.base import async_session_factory
 
 # Configure logging
 logging.basicConfig(
@@ -22,39 +28,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Get settings
+settings = get_settings()
+
 # Get bot token from environment
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", settings.BOT_TOKEN)
 if not BOT_TOKEN:
     logger.error("No BOT_TOKEN provided in environment variables!")
     sys.exit(1)
 
-# Create bot instance
-bot = Bot(token=BOT_TOKEN)
-
-# Create dispatcher
-dp = Dispatcher(storage=MemoryStorage())
-
-# Simple /start command handler
-@dp.message(lambda message: message.text == "/start")
-async def start_command(message: Message):
-    try:
-        logger.info(f"Received /start command from user {message.from_user.id}")
-        await message.answer("Hello! I'm the Allkinds Team Bot. Use /help to see available commands.")
-    except Exception as e:
-        logger.error(f"Error handling /start command: {e}")
-
-# Simple /help command handler
-@dp.message(lambda message: message.text == "/help")
-async def help_command(message: Message):
-    try:
-        logger.info(f"Received /help command from user {message.from_user.id}")
-        await message.answer("Available commands:\n/start - Start the bot\n/help - Show this help message")
-    except Exception as e:
-        logger.error(f"Error handling /help command: {e}")
+# Detect environment
+IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
 
 # Health check endpoint
 async def health_check(request):
-    """Simple health check that always returns OK"""
+    """Health check endpoint that always returns OK"""
     logger.info(f"Health check requested from {request.remote}")
     return web.Response(
         text=json.dumps({"status": "ok", "timestamp": datetime.now().isoformat()}),
@@ -73,20 +61,40 @@ async def status_page(request):
 
 # Main function
 async def main():
-    """Run the bot with minimal functionality"""
+    """Run the bot with full functionality"""
     try:
-        logger.info("Starting minimal bot...")
+        logger.info("Starting main bot...")
         
         # Log environment for debugging
         logger.info(f"Python version: {sys.version}")
         logger.info(f"Bot token: {BOT_TOKEN[:4]}...{BOT_TOKEN[-4:]}")
         logger.info(f"PORT: {os.environ.get('PORT', '8080')}")
         
+        # Create bot instance
+        bot = Bot(token=BOT_TOKEN)
+        
+        # Create dispatcher
+        storage = MemoryStorage()
+        dp = Dispatcher(storage=storage)
+        logger.info("Dispatcher initialized with MemoryStorage")
+        
+        # Register middleware
+        dp.update.outer_middleware(StateLoggingMiddleware())
+        logger.info("State logging middleware registered")
+        
+        dp.update.outer_middleware(DbSessionMiddleware(session_pool=async_session_factory))
+        logger.info("Database session middleware registered")
+        
+        # Register all original handlers
+        register_handlers(dp)
+        logger.info("All handlers registered")
+        
         # Set up commands
         try:
             await bot.set_my_commands([
                 BotCommand(command="/start", description="Start the bot"),
-                BotCommand(command="/help", description="Show help")
+                BotCommand(command="/help", description="Show help"),
+                BotCommand(command="/cancel", description="Cancel operation")
             ])
             logger.info("Bot commands set")
         except Exception as e:
@@ -105,7 +113,7 @@ async def main():
                 
                 # Parse the update from the request
                 update_data = await request.json()
-                logger.info(f"Update data: {json.dumps(update_data)[:200]}...")
+                logger.debug(f"Update data: {json.dumps(update_data)[:200]}...")
                 
                 # Convert dict to Update object
                 update = types.Update(**update_data)
@@ -116,7 +124,6 @@ async def main():
                 return web.Response(status=200)
             except Exception as e:
                 logger.error(f"Error handling webhook: {e}")
-                import traceback
                 logger.error(traceback.format_exc())
                 return web.Response(status=200)  # Still return 200 to prevent Telegram from retrying
         
@@ -126,21 +133,29 @@ async def main():
         app.router.add_get("/", status_page)
         
         # Set up webhook in production
-        is_production = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
-        if is_production:
+        if IS_PRODUCTION:
             webhook_domain = os.environ.get("WEBHOOK_DOMAIN")
             if webhook_domain:
                 webhook_url = f"https://{webhook_domain}{webhook_path}"
                 try:
-                    await bot.delete_webhook()
+                    # Delete existing webhook first
+                    await bot.delete_webhook(drop_pending_updates=True)
+                    # Set up new webhook
                     await bot.set_webhook(webhook_url, drop_pending_updates=True)
                     logger.info(f"Webhook set to: {webhook_url}")
                     
                     # Verify webhook
                     webhook_info = await bot.get_webhook_info()
                     logger.info(f"Webhook URL: {webhook_info.url}")
+                    
+                    # Check if set correctly
+                    if webhook_info.url != webhook_url:
+                        logger.warning(f"Webhook URL mismatch! Expected: {webhook_url}, Got: {webhook_info.url}")
                 except Exception as e:
                     logger.error(f"Error setting webhook: {e}")
+                    logger.error(traceback.format_exc())
+            else:
+                logger.error("WEBHOOK_DOMAIN environment variable not set!")
         else:
             # Delete webhook for development
             await bot.delete_webhook(drop_pending_updates=True)
@@ -164,15 +179,29 @@ async def main():
             try:
                 me = await bot.get_me()
                 logger.info(f"Bot is connected as @{me.username} (ID: {me.id})")
+                
+                # Check webhook status in production
+                if IS_PRODUCTION:
+                    webhook_info = await bot.get_webhook_info()
+                    logger.info(f"Webhook status: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
+                    
+                    # If webhook is not set correctly, try to set it again
+                    if webhook_domain and (not webhook_info.url or webhook_info.url != f"https://{webhook_domain}{webhook_path}"):
+                        logger.warning("Webhook not set correctly, resetting...")
+                        webhook_url = f"https://{webhook_domain}{webhook_path}"
+                        await bot.delete_webhook()
+                        await bot.set_webhook(webhook_url)
+                        logger.info(f"Webhook reset to: {webhook_url}")
             except Exception as e:
                 logger.error(f"Error checking bot status: {e}")
+                logger.error(traceback.format_exc())
             
             # Wait for 5 minutes
             await asyncio.sleep(300)
         
     except Exception as e:
         logger.error(f"Unhandled error in main function: {e}")
-        logger.exception("Main function error details:")
+        logger.exception(traceback.format_exc())
 
 if __name__ == "__main__":
     # Handle any critical exceptions
@@ -183,4 +212,4 @@ if __name__ == "__main__":
         logger.info("Bot stopped manually")
     except Exception as e:
         logger.critical(f"Critical error: {e}")
-        logger.exception("Critical error details:")
+        logger.exception(traceback.format_exc())
