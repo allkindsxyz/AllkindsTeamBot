@@ -3851,3 +3851,289 @@ async def on_use_original_text(callback: types.CallbackQuery, state: FSMContext)
     await state.update_data(confirmation_message_id=confirmation_message.message_id)
     await state.set_state(QuestionFlow.reviewing_question)
 
+
+async def on_leave_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle when user wants to leave a group."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    parts = callback.data.split(":")
+    if len(parts) > 1:
+        group_id = int(parts[1])
+    else:
+        await callback.answer("Invalid group data", show_alert=True)
+        return
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group not found", show_alert=True)
+        return
+    
+    # Ask for confirmation
+    confirmation_text = f"Are you sure you want to leave <b>{group.name}</b>?\n\nYour answers will remain in the group's database, but you will no longer have access to the group."
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Yes, leave group", callback_data=f"confirm_leave:{group_id}"),
+            types.InlineKeyboardButton(text="❌ No, stay", callback_data="cancel_leave"),
+        ]
+    ])
+    
+    await callback.message.edit_text(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle confirmation to leave a group."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group not found", show_alert=True)
+        return
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Check if user is in the group
+    is_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
+    if not is_member:
+        await callback.answer("You're not a member of this group", show_alert=True)
+        return
+    
+    # Remove user from group
+    try:
+        # Delete the user's answers in this group while keeping their questions
+        deleted_count = await delete_user_answers_in_group(session, db_user.id, group_id)
+        logger.info(f"Deleted {deleted_count} answers from user {db_user.id} in group {group_id}")
+        
+        # Remove user from the group
+        success = await group_repo.remove_user_from_group(session, db_user.id, group_id)
+        if success:
+            logger.info(f"User {db_user.id} left group {group_id} ({group.name})")
+            
+            # Clear state data related to this group
+            data = await state.get_data()
+            if data.get("current_group_id") == group_id:
+                await state.update_data(current_group_id=None, current_group_name=None)
+            
+            # Show success message
+            await callback.message.edit_text(f"You have successfully left <b>{group.name}</b>. Your answers have been removed, but your questions remain in the group.", parse_mode="HTML")
+            
+            # Show welcome menu
+            await show_welcome_menu(callback.message)
+        else:
+            logger.error(f"Failed to remove user {db_user.id} from group {group_id}")
+            await callback.answer("Error leaving the group. Please try again.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Error removing user from group: {e}")
+        await callback.answer("Error leaving the group. Please try again.", show_alert=True)
+
+
+async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancellation of leaving a group."""
+    await callback.answer()
+    
+    # Get current group from state
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    group_name = data.get("current_group_name", f"Group {group_id}")
+    
+    if group_id:
+        # Return to group menu
+        await callback.message.edit_text(f"You'll stay in <b>{group_name}</b>.", parse_mode="HTML")
+        await show_group_menu(callback.message, group_id, group_name, state)
+    else:
+        # If no current group, just show welcome menu
+        await callback.message.edit_text("Action cancelled.")
+        await show_welcome_menu(callback.message)
+
+
+async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle group management actions."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    parts = callback.data.split(":")
+    if len(parts) > 1:
+        group_id = int(parts[1])
+    else:
+        await callback.answer("Invalid group data", show_alert=True)
+        return
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group not found", show_alert=True)
+        return
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Check if user is a creator/admin of the group
+    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+    if not is_creator:
+        await callback.answer("You don't have permission to manage this group", show_alert=True)
+        return
+    
+    # Show management options
+    management_text = f"<b>{group.name}</b> Management\n\nWhat would you like to do?"
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="✏️ Rename Group", callback_data=f"group_rename:{group_id}")],
+        [types.InlineKeyboardButton(text="📝 Edit Description", callback_data=f"group_edit_desc:{group_id}")],
+        [types.InlineKeyboardButton(text="❌ Delete Group", callback_data=f"group_delete:{group_id}")],
+        [types.InlineKeyboardButton(text="🔙 Back", callback_data=f"go_to_group:{group_id}")],
+    ])
+    
+    await callback.message.edit_text(management_text, reply_markup=keyboard, parse_mode="HTML")
+
+async def on_group_rename(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle group rename request."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group not found", show_alert=True)
+        return
+    
+    # Update state and ask for new name
+    await state.update_data(edit_group_id=group_id, edit_group_name=group.name)
+    await state.set_state(GroupFlow.waiting_for_rename)
+    
+    # Send instructions
+    await callback.message.edit_text(
+        f"Please enter a new name for <b>{group.name}</b>:",
+        parse_mode="HTML"
+    )
+
+
+async def on_group_edit_description(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle group description edit request."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group not found", show_alert=True)
+        return
+    
+    # Update state and ask for new description
+    await state.update_data(edit_group_id=group_id, edit_group_name=group.name)
+    await state.set_state(GroupFlow.waiting_for_description_edit)
+    
+    # Show current description and send instructions
+    current_desc = group.description or "No description"
+    await callback.message.edit_text(
+        f"Current description of <b>{group.name}</b>:\n\n{current_desc}\n\nPlease enter a new description:",
+        parse_mode="HTML"
+    )
+
+
+async def on_group_delete(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle group delete request."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group not found", show_alert=True)
+        return
+    
+    # Ask for confirmation
+    confirmation_text = f"⚠️ <b>WARNING</b> ⚠️\n\nAre you ABSOLUTELY sure you want to delete the group <b>{group.name}</b>?\n\nThis will remove ALL data associated with this group, including questions and answers. This action CANNOT be undone."
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="❌ NO, Cancel", callback_data=f"go_to_group:{group_id}"),
+            types.InlineKeyboardButton(text="⚠️ YES, Delete", callback_data=f"confirm_group_delete:{group_id}"),
+        ]
+    ])
+    
+    await callback.message.edit_text(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def on_confirm_group_delete(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle confirmation of group deletion."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get group details
+    group = await group_repo.get(session, group_id)
+    if not group:
+        await callback.answer("Group already deleted", show_alert=True)
+        return
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Check if user is the creator
+    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+    if not is_creator:
+        await callback.answer("Only the group creator can delete the group", show_alert=True)
+        return
+    
+    # Attempt to delete the group
+    try:
+        # Delete all group members
+        members = await group_repo.get_group_members(session, group_id)
+        for member in members:
+            await group_repo.remove_user_from_group(session, member.user_id, group_id)
+        
+        # Delete all questions and answers (this would ideally be handled by cascade delete in DB)
+        # Delete the group itself
+        # (Here we would need additional repo functions or direct SQL)
+        
+        # For now, just mark the group as inactive
+        stmt = update(Group).where(Group.id == group_id).values(is_active=False)
+        await session.execute(stmt)
+        await session.commit()
+        
+        logger.info(f"Group {group_id} ({group.name}) marked as inactive by user {db_user.id}")
+        
+        # Clear state data related to this group
+        data = await state.get_data()
+        if data.get("current_group_id") == group_id:
+            await state.update_data(current_group_id=None, current_group_name=None)
+        
+        # Show success message
+        await callback.message.edit_text(f"Group <b>{group.name}</b> has been deleted.", parse_mode="HTML")
+        
+        # Show welcome menu
+        await show_welcome_menu(callback.message)
+    except Exception as e:
+        logger.error(f"Error deleting group: {e}")
+        await callback.answer("Error deleting the group. Please try again.", show_alert=True)
+        await session.rollback()
+
