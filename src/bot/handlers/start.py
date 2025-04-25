@@ -4137,3 +4137,124 @@ async def on_confirm_group_delete(callback: types.CallbackQuery, state: FSMConte
         await callback.answer("Error deleting the group. Please try again.", show_alert=True)
         await session.rollback()
 
+
+async def process_group_rename(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Process the new name for a group after the rename request."""
+    new_name = message.text.strip()
+    
+    # Basic validation
+    if len(new_name) < 3:
+        await message.answer("Name is too short. Please enter a name with at least 3 characters.")
+        return
+    
+    if len(new_name) > 50:
+        await message.answer("Name is too long. Please enter a name with at most 50 characters.")
+        return
+    
+    # Get group ID from state
+    data = await state.get_data()
+    group_id = data.get("edit_group_id")
+    old_name = data.get("edit_group_name")
+    
+    if not group_id:
+        await message.answer("Error: Group ID not found. Please try again.")
+        await state.clear()
+        return
+    
+    # Get user from DB
+    user_tg = message.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Check if user is the creator
+    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+    if not is_creator:
+        await message.answer("Only the group creator can rename the group.")
+        await state.clear()
+        return
+    
+    # Update the group name
+    try:
+        stmt = update(Group).where(Group.id == group_id).values(name=new_name)
+        await session.execute(stmt)
+        await session.commit()
+        
+        logger.info(f"Group {group_id} renamed from '{old_name}' to '{new_name}' by user {db_user.id}")
+        
+        # Update state with new name
+        await state.update_data(current_group_name=new_name)
+        
+        # Clear edit state
+        await state.set_state(QuestionFlow.viewing_question)
+        
+        # Show success message
+        await message.answer(f"Group successfully renamed from <b>{old_name}</b> to <b>{new_name}</b>.", parse_mode="HTML")
+        
+        # Show group menu with updated name
+        await show_group_menu(message, group_id, new_name, state, session=session)
+    except Exception as e:
+        logger.error(f"Error renaming group: {e}")
+        await message.answer("Error renaming the group. Please try again.")
+        await session.rollback()
+
+
+async def process_group_description_edit(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Process the new description for a group after the edit description request."""
+    new_description = message.text.strip()
+    
+    # Basic validation
+    if len(new_description) > 500:
+        await message.answer("Description is too long. Please enter a description with at most 500 characters.")
+        return
+    
+    # Get group ID from state
+    data = await state.get_data()
+    group_id = data.get("edit_group_id")
+    group_name = data.get("edit_group_name")
+    
+    if not group_id:
+        await message.answer("Error: Group ID not found. Please try again.")
+        await state.clear()
+        return
+    
+    # Get user from DB
+    user_tg = message.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Check if user is the creator
+    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+    if not is_creator:
+        await message.answer("Only the group creator can edit the group description.")
+        await state.clear()
+        return
+    
+    # Update the group description
+    try:
+        stmt = update(Group).where(Group.id == group_id).values(description=new_description)
+        await session.execute(stmt)
+        await session.commit()
+        
+        logger.info(f"Description of group {group_id} ({group_name}) updated by user {db_user.id}")
+        
+        # Clear edit state
+        await state.set_state(QuestionFlow.viewing_question)
+        
+        # Show success message
+        await message.answer(f"Description of <b>{group_name}</b> has been updated.", parse_mode="HTML")
+        
+        # Show group menu
+        await show_group_menu(message, group_id, group_name, state, session=session)
+    except Exception as e:
+        logger.error(f"Error updating group description: {e}")
+        await message.answer("Error updating the group description. Please try again.")
+        await session.rollback()
+
