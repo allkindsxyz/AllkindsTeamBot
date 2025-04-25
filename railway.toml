@@ -20,7 +20,7 @@ healthcheckGracePeriod = 120 # Give 2 minutes grace period for startup
 
 [[services]]
 name = "allkinds-chat-bot" # Ensure this matches your service name in Railway
-startCommand = "pwd && ls -la && ls -la src/ && echo PYTHONPATH is: $PYTHONPATH && echo --- Starting Python Communicator Bot --- && python3 -m src.communicator_bot.main"
+startCommand = "pwd && ls -la && ls -la src/ && echo PYTHONPATH is: $PYTHONPATH && python3 -m src.db.init_communicator_db && echo --- Starting Python Communicator Bot --- && python3 -m src.communicator_bot.main"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10  # Increase max retries
 healthcheckPath = "/health" # Add healthcheck path to keep the service active
