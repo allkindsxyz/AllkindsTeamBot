@@ -3284,7 +3284,7 @@ def register_handlers(dp: Dispatcher) -> None:
     
     # Question flow
     dp.message.register(on_show_questions, Command("show_questions"))
-    dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.reviewing_question) 
+    # dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.reviewing_question) # Removed undefined handler
     dp.callback_query.register(process_answer_callback, F.data.startswith("answer:"))
     dp.callback_query.register(on_skip_question, F.data.startswith("skip_question"))
     dp.callback_query.register(on_delete_question, F.data.startswith("delete_question"))
