@@ -23,6 +23,50 @@ metrics = {
 # Check if we're in Railway
 IS_RAILWAY = os.environ.get("RAILWAY_ENVIRONMENT") is not None
 
+def log_environment_vars():
+    """Log all environment variables for debugging purposes."""
+    # Get the main logger
+    main_logger = logging.getLogger(__name__)
+    
+    # Create a filtered copy of environment variables (hide secrets)
+    safe_env = {}
+    
+    # List of keys that should be partially hidden
+    sensitive_keys = ['TOKEN', 'KEY', 'SECRET', 'PASSWORD', 'PASS', 'AUTH']
+    
+    for k, v in os.environ.items():
+        # Check if this is a sensitive variable
+        is_sensitive = any(secret_key in k.upper() for secret_key in sensitive_keys)
+        
+        if is_sensitive and v:
+            # Show only the first and last 3 characters of sensitive values
+            if len(v) > 8:
+                safe_env[k] = f"{v[:3]}...{v[-3:]}"
+            else:
+                safe_env[k] = "***"
+        else:
+            safe_env[k] = v
+    
+    # Log environment variables
+    main_logger.info("===== ENVIRONMENT VARIABLES =====")
+    
+    # Log important variables first
+    priority_vars = ['RAILWAY_ENVIRONMENT', 'RAILWAY_SERVICE_NAME', 'PORT', 
+                    'RAILWAY_PUBLIC_DOMAIN', 'RAILWAY_PUBLIC_URL', 'WEBHOOK_DOMAIN',
+                    'BOT_TOKEN', 'DATABASE_URL', 'ADMIN_IDS']
+    
+    for var in priority_vars:
+        if var in safe_env:
+            main_logger.info(f"{var}: {safe_env[var]}")
+    
+    # Then log all other variables
+    main_logger.info("--- Other Environment Variables ---")
+    for k, v in sorted(safe_env.items()):
+        if k not in priority_vars:
+            main_logger.info(f"{k}: {v}")
+    
+    main_logger.info("=================================")
+
 def configure_diagnostics():
     """Configure diagnostics logging"""
     if not IS_RAILWAY:

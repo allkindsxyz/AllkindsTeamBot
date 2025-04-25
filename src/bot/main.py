@@ -14,6 +14,8 @@ import sys
 import logging
 import traceback
 import psycopg2
+from datetime import datetime
+from typing import Dict, List, Any, Callable, Awaitable
 
 # from src.bot.config import bot_settings # No longer needed
 from src.core.config import get_settings # Import main settings
@@ -21,7 +23,7 @@ from src.bot.handlers import register_handlers
 from src.bot.middlewares import DbSessionMiddleware # Import middleware
 from src.bot.middlewares.logging_middleware import StateLoggingMiddleware # Import the new middleware
 from src.db.base import async_session_factory # Import session factory
-from src.core.diagnostics import configure_diagnostics, track_webhook, get_diagnostics_report # Import diagnostics
+from src.core.diagnostics import configure_diagnostics, track_webhook, get_diagnostics_report, log_environment_vars # Import diagnostics
 
 settings = get_settings()
 
@@ -35,6 +37,48 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"  # Binding to all interfaces
 WEBAPP_PORT = int(os.environ.get("PORT", 8000))  # Using PORT env var from Railway
 
+# Add message tracing middleware for debugging
+class MessageLoggingMiddleware:
+    """Middleware for detailed logging of message processing"""
+    
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        """Log detailed information about incoming messages and their processing"""
+        now = datetime.now().isoformat()
+        
+        # For text messages, log the content
+        if hasattr(event, 'text'):
+            logger.info(f"[{now}] Received message: {event.text} from user ID: {event.from_user.id}")
+            if event.text.startswith('/'):
+                logger.info(f"[{now}] Command detected: {event.text}")
+        else:
+            logger.info(f"[{now}] Received non-text message from user ID: {event.from_user.id}")
+        
+        try:
+            # Log that we're about to process the message with relevant data
+            handler_name = handler.__name__ if hasattr(handler, "__name__") else str(handler)
+            logger.info(f"[{now}] Processing with handler: {handler_name}")
+            
+            # Process the message and track time
+            start_time = time.time()
+            result = await handler(event, data)
+            process_time = time.time() - start_time
+            
+            # Log success
+            logger.info(f"[{now}] Handler completed in {process_time:.2f}s")
+            return result
+            
+        except Exception as e:
+            # Log the complete error information for debugging
+            logger.error(f"[{now}] Error processing message: {str(e)}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            # Re-raise the exception for the error handler middleware to process
+            raise
 
 async def on_startup(bot: Bot) -> None:
     """Initialize bot and set webhook when app starts."""
@@ -269,7 +313,7 @@ async def start_bot() -> None:
     """
     # Set up logging format
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,  # Change to DEBUG for more detailed logs
         format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -289,7 +333,11 @@ async def start_bot() -> None:
     dp = Dispatcher(storage=storage) # Pass storage to Dispatcher
     logger.info("Dispatcher initialized with MemoryStorage.") # Add log
 
-    # Register state logging middleware FIRST (as outer middleware)
+    # Register detailed message logging middleware FIRST
+    dp.message.middleware(MessageLoggingMiddleware())
+    logger.info("Message logging middleware registered for debugging.")
+
+    # Register state logging middleware as outer middleware
     dp.update.outer_middleware(StateLoggingMiddleware())
     logger.info("State logging middleware registered.")
 
@@ -299,15 +347,19 @@ async def start_bot() -> None:
 
     # Register all handlers (after middlewares)
     register_handlers(dp)
-    logging.info("All handlers registered. Logging button handlers:")
-    for router in dp.sub_routers:
-        for handler in router.message.handlers:
-            if hasattr(handler.callback, "__name__"):
-                callback_name = handler.callback.__name__
-                # Log text button handlers specifically
-                if hasattr(handler.filter, "text") and handler.filter.text:
-                    logging.info(f"Text button handler: '{handler.filter.text}' -> {callback_name}")
     
+    # Log available commands for debugging
+    commands = [
+        BotCommand(command="/start", description="Start the bot"),
+        BotCommand(command="/help", description="Show help"),
+        BotCommand(command="/cancel", description="Cancel current operation")
+    ]
+    try:
+        await bot.set_my_commands(commands)
+        logger.info(f"Bot commands set: {[cmd.command for cmd in commands]}")
+    except Exception as e:
+        logger.error(f"Failed to set bot commands: {e}")
+
     # Log callback query handlers specifically
     logging.info("Logging callback query handlers:")
     for router in dp.sub_routers:
@@ -460,6 +512,8 @@ if __name__ == "__main__":
     # Configure logging (optional, adjust as needed)
     # logger.add("main_bot.log", rotation="1 week", level="INFO") # Optional file logging
     logger.info("Initializing main bot...")
+    # Log all environment variables for debugging
+    log_environment_vars()
     try:
         asyncio.run(start_bot())
     except KeyboardInterrupt:
