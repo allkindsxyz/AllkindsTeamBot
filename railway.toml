@@ -1,0 +1,24 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+# Remove the global [deploy] block, settings are now per-service
+
+[[services]]
+name = "allkinds-team-bot" # Ensure this matches your service name in Railway
+# Add diagnostic commands before the python command
+startCommand = "pwd && ls -la && echo PYTHONPATH is: $PYTHONPATH && echo --- Starting Python --- && python3 -m src.bot.main"
+restartPolicyType = "ON_FAILURE"
+healthcheckPath = "/health" # Add healthcheck path to keep the service active
+healthcheckTimeout = 15 # 15 seconds timeout
+healthcheckInterval = 60 # Check every minute
+# [services.deploy.pre] # Pre-deploy command only for the main bot service  <- Temporarily disable this block
+# command = "python3 -c \"import asyncio; from src.db.init_db import init_db; print('Starting database initialization...'); asyncio.run(init_db()); print('Database initialization complete.')\""
+
+[[services]]
+name = "allkinds-chat-bot" # Ensure this matches your service name in Railway
+startCommand = "pwd && ls -la && ls -la src/ && echo PYTHONPATH is: $PYTHONPATH && echo --- Starting Python Communicator Bot --- && python3 -m src.communicator_bot.main"
+restartPolicyType = "ON_FAILURE"
+healthcheckPath = "/health" # Add healthcheck path to keep the service active
+healthcheckTimeout = 15 # 15 seconds timeout
+healthcheckInterval = 60 # Check every minute 

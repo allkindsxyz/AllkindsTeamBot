@@ -1,0 +1,16 @@
+aiogram>=3.3.0
+sqlalchemy>=2.0.27
+loguru>=0.7.2
+python-dotenv>=1.0.0
+numpy
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+aiosqlite>=0.20.0
+greenlet>=3.0.0
+alembic>=1.12.1
+pinecone-client>=3.0.0
+openai>=1.18.0
+asyncpg>=0.27.0
+psycopg2-binary==2.9.9
+aiohttp>=3.9.0
+requests>=2.31.0

@@ -1,0 +1,2 @@
+import asyncio; from src.db import get_session; from src.db.repositories import group_repo, user_repo; async def check_users(): async for session in get_session(): print('Group members:'); members = await group_repo.get_group_members(session, 1); print([m.user_id for m in members]); print('
+Users:'); users = await user_repo.get_all(session); print([(u.id, u.telegram_id, u.username) for u in users]); break; asyncio.run(check_users())

@@ -1,0 +1,147 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.backup
+
+# Logs
+logs/
+*.log
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Telegram Bot
+*.session
+*.session-journal
+bot.pid
+*.pid
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.backup
+
+# Logs
+logs/
+*.log
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Telegram Bot
+*.session
+*.session-journal # PID files
+bot.pid
+*.pid
+
+# Backup env files
+.env.backup
+
+# Add diagnostic log files
+main_bot.log
+*.log
+railway_logs.txt
+diagnostic_reports/
+
+# Credential files and sensitive data
+*credentials*.txt
+*credentials*.json
+*secret*.txt
+*secret*.json
+*api_key*.txt
+*api_key*.json
+*password*.txt
+*password*.json
+*.bak
+*.backup
+# Special exceptions for internal modules
+!src/core/credentials.py
+# Database dumps
+*.dump
+*.sql
