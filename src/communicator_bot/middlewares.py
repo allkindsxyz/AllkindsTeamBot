@@ -4,6 +4,7 @@ from aiogram.types import TelegramObject, Update
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from datetime import datetime, timedelta
+import os
 
 from src.core.config import get_settings
 from src.db.models import AnonymousChatSession
@@ -15,12 +16,45 @@ class DatabaseMiddleware(BaseMiddleware):
     
     def __init__(self):
         """Initialize the middleware."""
+        # Use the same database configuration as the main bot
         self.settings = get_settings()
+        
+        # Get database URL from environment - SAME AS MAIN BOT
+        db_url = os.environ.get("DATABASE_URL", self.settings.db_url)
+        logger.info(f"Original database URL (starts with): {db_url[:15] if db_url else 'None'}...")
+        
+        # Process the database URL - same logic as the main bot
+        if db_url.startswith('postgres://'):
+            db_url = db_url.replace('postgres://', 'postgresql+asyncpg://', 1)
+        elif db_url.startswith('postgresql://'):
+            db_url = db_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+        
+        logger.info(f"Using database URL (starts with): {db_url[:15] if db_url else 'None'}...")
+        
+        # Create connection arguments
+        connect_args = {}
+        if 'postgresql' in db_url or 'postgres' in db_url:
+            # PostgreSQL specific connect args for asyncpg
+            connect_args = {
+                "timeout": 10,  # Connection timeout in seconds
+                "server_settings": {
+                    "application_name": "allkinds-communicator"
+                }
+            }
+        
+        # Create the engine with the same configuration as the main bot
         self.engine = create_async_engine(
-            self.settings.db_url,
+            db_url,
             echo=False,
             future=True,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30,
+            pool_size=5,
+            max_overflow=10,
+            connect_args=connect_args
         )
+        
         self.session_factory = async_sessionmaker(
             self.engine,
             expire_on_commit=False,
