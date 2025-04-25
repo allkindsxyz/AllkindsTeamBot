@@ -11,7 +11,7 @@ import asyncio
 import time
 from datetime import datetime
 from aiohttp import web
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -98,15 +98,26 @@ async def main():
         # Register routes
         webhook_path = f"/webhook/{BOT_TOKEN}"
         
-        # Use SimpleRequestHandler-style approach
+        # Improved webhook handler
         async def handle_webhook(request):
             try:
                 logger.info("Received webhook request")
+                
+                # Parse the update from the request
                 update_data = await request.json()
-                await dp.feed_update(bot=bot, update=update_data)
+                logger.info(f"Update data: {json.dumps(update_data)[:200]}...")
+                
+                # Convert dict to Update object
+                update = types.Update(**update_data)
+                
+                # Process the update
+                await dp.feed_update(bot, update)
+                
                 return web.Response(status=200)
             except Exception as e:
                 logger.error(f"Error handling webhook: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return web.Response(status=200)  # Still return 200 to prevent Telegram from retrying
         
         # Register routes
