@@ -81,96 +81,99 @@ class MessageLoggingMiddleware:
             raise
 
 async def on_startup(bot: Bot) -> None:
-    """Initialize bot and set webhook when app starts."""
-    # Ensure we have the bot token
-    if not settings.BOT_TOKEN:
-        logging.critical("BOT_TOKEN is not configured in settings! Cannot set webhook.")
-        return
-
-    # Determine the webhook domain:
-    # 1. Use WEBHOOK_DOMAIN env var if set (for custom domains)
-    # 2. Use RAILWAY_PUBLIC_DOMAIN env var if available (standard Railway deployment)
-    # 3. Fallback/Error if neither is set
-    webhook_domain = os.environ.get("WEBHOOK_DOMAIN", "").strip()
-    if not webhook_domain:
-        logging.warning("WEBHOOK_DOMAIN is not set. Trying RAILWAY_PUBLIC_DOMAIN...")
-        webhook_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
-        if not webhook_domain:
-            logging.error("Neither WEBHOOK_DOMAIN nor RAILWAY_PUBLIC_DOMAIN are set! Cannot determine webhook URL.")
-            # Optionally, you could attempt a very generic fallback, but it's risky:
-            # service_name = os.environ.get("RAILWAY_SERVICE_NAME", "unknown-service")
-            # project_id = os.environ.get("RAILWAY_PROJECT_ID", "unknown-project")
-            # webhook_domain = f"{service_name}-{project_id}.up.railway.app"
-            # logging.warning(f"Using generated fallback domain: {webhook_domain}")
-            # For now, let's just fail if no domain is found
-            return # Cannot proceed without a valid domain
-        else:
-            logging.info(f"Using RAILWAY_PUBLIC_DOMAIN: {webhook_domain}")
-    else:
-        logging.info(f"Using explicitly set WEBHOOK_DOMAIN: {webhook_domain}")
-
-    # Construct the final webhook URL
-    # Ensure domain has https:// prefix
-    if not webhook_domain.startswith("http"):
-        webhook_domain = f"https://{webhook_domain}"
-    webhook_url = f"{webhook_domain}/webhook/{settings.BOT_TOKEN}"
-    logging.info(f"Final Webhook URL to be set: {webhook_url}")
-
-    # Get current webhook info
-    current_webhook = await bot.get_webhook_info()
-    logging.info(f"Current webhook status: URL={current_webhook.url}, pending_update_count={current_webhook.pending_update_count}")
-
-    # Set the webhook only if it's different or not set
-    if current_webhook.url != webhook_url:
-        logging.info(f"Webhook URL needs to be updated (Current: '{current_webhook.url}', Target: '{webhook_url}').")
-        await bot.delete_webhook(drop_pending_updates=True) # Drop pending updates during change
-        logging.info("Deleted existing webhook configuration.")
+    """Initialize bot and set webhook (if in production)."""
+    
+    # Only set webhook in production (Railway)
+    if IS_PRODUCTION:
+        logger.info("Setting up webhook in production environment")
         
-        logging.info(f"Setting webhook to: {webhook_url}")
-        result = await bot.set_webhook(webhook_url)
-        if not result:
-            logging.error(f"Failed to set webhook to {webhook_url}")
-            return # Stop if webhook setting fails
-        else:
-            logging.info("Successfully set new webhook.")
-            # Short delay after setting webhook can sometimes help
-            await asyncio.sleep(1)
+        # Get webhook domain from environment
+        webhook_domain = os.environ.get("WEBHOOK_DOMAIN")
+        if not webhook_domain:
+            logger.error("WEBHOOK_DOMAIN environment variable is not set")
+            return
+        
+        # Format the full webhook URL with domain and token
+        webhook_path = f'/webhook/{settings.BOT_TOKEN}'
+        webhook_url = f"https://{webhook_domain}{webhook_path}"
+        
+        # Configure webhook settings 
+        try:
+            await bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query"],
+                max_connections=100
+            )
+            logger.info(f"Webhook set to: {webhook_url}")
+            
+            # Verify webhook was set correctly
+            webhook_info = await bot.get_webhook_info()
+            logger.info(f"Webhook Info - URL: {webhook_info.url}")
+            logger.info(f"Webhook Info - Pending Updates: {webhook_info.pending_update_count}")
+            logger.info(f"Webhook Info - Max Connections: {webhook_info.max_connections}")
+            
+            # Verify the webhook URL matches what we expect
+            if webhook_info.url != webhook_url:
+                logger.warning(f"Webhook URL mismatch. Expected: {webhook_url}, Got: {webhook_info.url}")
+                
+                # If there's a severe mismatch, try setting it again
+                if not webhook_info.url or webhook_domain not in webhook_info.url:
+                    logger.warning("Severe webhook URL mismatch. Attempting to set again...")
+                    
+                    # Define retry function with exponential backoff
+                    async def retry_set_webhook():
+                        max_retries = 5
+                        for i in range(max_retries):
+                            try:
+                                # Delete any existing webhook first
+                                await bot.delete_webhook()
+                                logger.info("Deleted existing webhook before retry")
+                                
+                                # Wait with exponential backoff
+                                wait_time = 2 ** i
+                                await asyncio.sleep(wait_time)
+                                
+                                # Try setting the webhook again
+                                await bot.set_webhook(
+                                    url=webhook_url,
+                                    drop_pending_updates=True,
+                                    allowed_updates=["message", "callback_query"],
+                                    max_connections=100
+                                )
+                                
+                                # Verify it worked
+                                new_info = await bot.get_webhook_info()
+                                logger.info(f"Retry {i+1}: New webhook URL: {new_info.url}")
+                                
+                                if new_info.url == webhook_url:
+                                    logger.info("Webhook set successfully after retry")
+                                    return True
+                                
+                                logger.warning(f"Retry {i+1}: Webhook URL still doesn't match")
+                            except Exception as e:
+                                logger.error(f"Retry {i+1}: Error setting webhook: {e}")
+                        
+                        logger.error(f"Failed to set webhook after {max_retries} retries")
+                        return False
+                    
+                    # Call the retry function
+                    await retry_set_webhook()
+            else:
+                logger.info("Webhook URL verification successful")
+                
+            # Get bot user info to confirm API connection
+            me = await bot.get_me()
+            logger.info(f"Bot initialized as @{me.username} (ID: {me.id})")
+            
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+            logger.exception("Webhook setup error details:")
     else:
-        logging.info("Webhook URL is already correctly set. Skipping update.")
-
-    # Get webhook info again to verify it was set correctly
-    try:
-        webhook_info = await bot.get_webhook_info()
-        logging.info(f"Verified webhook status: URL={webhook_info.url}, pending_update_count={webhook_info.pending_update_count}")
-        if webhook_info.url != webhook_url:
-            # This is a critical error - log extensively
-            logging.critical(f"Webhook verification FAILED! Expected '{webhook_url}', but got '{webhook_info.url}'")
-            logging.critical(f"This means Telegram won't send updates to your bot!")
-            logging.critical(f"Domain: {webhook_domain}, RAILWAY_PUBLIC_DOMAIN: {os.environ.get('RAILWAY_PUBLIC_DOMAIN')}")
-            # But don't abort - Railway may need time to propagate DNS changes
-            logging.warning("Continuing startup despite webhook mismatch - will retry setting webhook later")
-            
-            # Schedule a retry after 30 seconds (DNS propagation may take time)
-            async def retry_set_webhook():
-                await asyncio.sleep(30)
-                logging.info("Retrying webhook setup after delay...")
-                await bot.delete_webhook(drop_pending_updates=False)
-                retry_result = await bot.set_webhook(webhook_url)
-                retry_info = await bot.get_webhook_info()
-                logging.info(f"Retry result: {retry_result}, URL now: {retry_info.url}")
-            
-            asyncio.create_task(retry_set_webhook())
-    except Exception as e:
-        logging.error(f"Error verifying webhook info: {str(e)}")
-        traceback.print_exc()
-
-    # Test the connection to Telegram API
-    try:
-        me = await bot.get_me()
-        logging.info(f"Bot info: id={me.id}, username={me.username}, first_name={me.first_name}")
-    except Exception as e:
-        logging.error(f"Error getting bot info: {str(e)}")
-        traceback.print_exc()
+        # In development, make sure webhook is deleted
+        logger.info("Development mode: Deleting webhook for polling")
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook deleted successfully")
 
 
 async def on_shutdown(bot: Bot) -> None:
@@ -189,6 +192,7 @@ async def health_check(request):
     health_status = {
         "status": "ok",
         "time": time.time(),
+        "timestamp": datetime.now().isoformat(),
         "checks": {}
     }
     
@@ -240,9 +244,17 @@ async def health_check(request):
             health_status["webhook"] = {
                 "url": webhook_info.url,
                 "pending_updates": webhook_info.pending_update_count,
-                "max_connections": webhook_info.max_connections
+                "max_connections": webhook_info.max_connections,
+                "last_error_date": webhook_info.last_error_date,
+                "last_error_message": webhook_info.last_error_message
             }
-            logger.info(f"Health check: Webhook status checked, URL: {webhook_info.url}")
+            
+            if webhook_info.last_error_message:
+                logger.error(f"Health check: Webhook has error: {webhook_info.last_error_message}")
+                health_status["checks"]["webhook"] = "error"
+            else:
+                logger.info(f"Health check: Webhook status checked, URL: {webhook_info.url}")
+                health_status["checks"]["webhook"] = "ok"
         else:
             logger.warning("Health check: Bot not available for webhook check")
             health_status["checks"]["webhook"] = "warning"
@@ -250,8 +262,23 @@ async def health_check(request):
         logger.error(f"Health check: Webhook check error: {str(e)}")
         health_status["checks"]["webhook"] = "error"
     
+    # Add bot startup metrics
+    health_status["metrics"] = {
+        "webhook_calls": metrics.get("webhook_calls", 0),
+        "db_operations": metrics.get("db_operations", 0),
+        "command_calls": metrics.get("command_calls", 0),
+        "errors": metrics.get("errors", 0),
+        "last_webhook_time": metrics.get("last_webhook_time", None)
+    }
+    
+    # Create the response text
+    response_text = json.dumps(health_status, indent=2)
+    
+    # Log the full health check response for debugging
+    logger.info(f"Health check response: {response_text}")
+    
     # Always return 200 OK for Railway's health check system
-    return web.Response(text="OK", content_type="text/plain", status=200)
+    return web.Response(text=response_text, content_type="application/json", status=200)
 
 
 # Diagnostics handler for Railway monitoring
