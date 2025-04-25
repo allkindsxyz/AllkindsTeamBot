@@ -19,13 +19,68 @@ from sqlalchemy.schema import CreateTable
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Get database URL from environment
-DB_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///allkinds_communicator.db")
-if DB_URL.startswith("postgresql://"):
-    DB_URL = DB_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+# Get database URL from environment - USING THE SAME DATABASE AS THE MAIN BOT
+DB_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./allkinds.db")
+logger.info(f"Original database URL: {DB_URL[:15]}...")
 
-# Create async engine
-engine = create_async_engine(DB_URL, echo=True)
+# Process the database URL - same logic as the main bot
+def process_database_url(url):
+    if not url:
+        logger.warning("No database URL provided, falling back to SQLite")
+        return "sqlite+aiosqlite:///./allkinds.db"
+    
+    # Handle SQLite explicitly
+    if url.startswith('sqlite'):
+        logger.info("Using SQLite database")
+        return url
+    
+    try:
+        # Handle Railway's postgres:// format
+        if url.startswith('postgres://') or url.startswith('postgresql://'):
+            # For asyncpg, we need to use postgresql+asyncpg://
+            if 'asyncpg' not in url:
+                if url.startswith('postgres://'):
+                    url = url.replace('postgres://', 'postgresql+asyncpg://', 1)
+                else:
+                    url = url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+            
+            logger.info(f"Processed database URL (starts with): {url[:15]}...")
+            return url
+            
+        logger.warning(f"Unrecognized database URL format: {url[:10]}...")
+        return url
+    except Exception as e:
+        logger.error(f"Error processing database URL: {e}")
+        logger.info("Falling back to SQLite database")
+        return "sqlite+aiosqlite:///./allkinds.db"
+
+# Process the database URL using the same logic as the main bot
+DB_URL = process_database_url(DB_URL)
+logger.info(f"Using database: {DB_URL[:15]}...")
+
+# Create async engine with enhanced parameters
+connect_args = {}
+if 'postgresql' in DB_URL or 'postgres' in DB_URL:
+    # PostgreSQL specific connect args for asyncpg
+    connect_args = {
+        "timeout": 10,  # Connection timeout in seconds
+        "server_settings": {
+            "application_name": "allkinds-communicator"
+        }
+    }
+
+# Create the engine with the same configuration as the main bot
+engine = create_async_engine(
+    DB_URL,
+    echo=True,
+    future=True,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_timeout=30,
+    pool_size=5,
+    max_overflow=10,
+    connect_args=connect_args
+)
 
 # Create declarative base
 Base = declarative_base()
