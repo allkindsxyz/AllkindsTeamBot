@@ -85,9 +85,15 @@ async def main():
         dp.update.outer_middleware(DbSessionMiddleware(session_pool=async_session_factory))
         logger.info("Database session middleware registered")
         
-        # Register all original handlers
-        register_handlers(dp)
-        logger.info("All handlers registered")
+        # Register all handlers with exception handling
+        try:
+            register_handlers(dp)
+            logger.info("All handlers registered successfully")
+        except Exception as e:
+            logger.error(f"Error registering handlers: {e}")
+            logger.error(traceback.format_exc())
+            # Continue anyway - we'll handle missing handlers during runtime
+            logger.info("Continuing despite handler registration error")
         
         # Set up commands
         try:
@@ -109,7 +115,7 @@ async def main():
         # Improved webhook handler
         async def handle_webhook(request):
             try:
-                logger.info("Received webhook request")
+                logger.info(f"Received webhook request from {request.remote}")
                 
                 # Parse the update from the request
                 update_data = await request.json()
@@ -119,13 +125,19 @@ async def main():
                 update = types.Update(**update_data)
                 
                 # Process the update
-                await dp.feed_update(bot, update)
+                try:
+                    await dp.feed_update(bot, update)
+                    logger.info(f"Successfully processed update ID: {update.update_id}")
+                except Exception as update_error:
+                    logger.error(f"Error processing update: {update_error}")
+                    logger.error(traceback.format_exc())
                 
+                # Always return 200 to prevent Telegram from retrying
                 return web.Response(status=200)
-            except Exception as e:
-                logger.error(f"Error handling webhook: {e}")
+            except Exception as request_error:
+                logger.error(f"Error handling webhook request: {request_error}")
                 logger.error(traceback.format_exc())
-                return web.Response(status=200)  # Still return 200 to prevent Telegram from retrying
+                return web.Response(status=200)
         
         # Register routes
         app.router.add_post(webhook_path, handle_webhook)
@@ -133,8 +145,8 @@ async def main():
         app.router.add_get("/", status_page)
         
         # Set up webhook in production
+        webhook_domain = os.environ.get("WEBHOOK_DOMAIN")
         if IS_PRODUCTION:
-            webhook_domain = os.environ.get("WEBHOOK_DOMAIN")
             if webhook_domain:
                 webhook_url = f"https://{webhook_domain}{webhook_path}"
                 try:
@@ -155,7 +167,18 @@ async def main():
                     logger.error(f"Error setting webhook: {e}")
                     logger.error(traceback.format_exc())
             else:
-                logger.error("WEBHOOK_DOMAIN environment variable not set!")
+                logger.warning("WEBHOOK_DOMAIN environment variable not set! Using RAILWAY_PUBLIC_DOMAIN if available")
+                railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+                if railway_domain:
+                    webhook_url = f"https://{railway_domain}{webhook_path}"
+                    try:
+                        await bot.delete_webhook(drop_pending_updates=True)
+                        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+                        logger.info(f"Webhook set using RAILWAY_PUBLIC_DOMAIN: {webhook_url}")
+                    except Exception as e:
+                        logger.error(f"Error setting webhook with RAILWAY_PUBLIC_DOMAIN: {e}")
+                else:
+                    logger.error("No webhook domain available! Bot will not receive updates")
         else:
             # Delete webhook for development
             await bot.delete_webhook(drop_pending_updates=True)
@@ -173,43 +196,68 @@ async def main():
         # Keep the service running
         logger.info("Bot is running indefinitely...")
         
-        # Keep alive - log periodic status
+        # Keep alive - log periodic status and check webhook
+        retry_count = 0
         while True:
-            logger.info(f"Bot status check at {datetime.now().isoformat()}")
             try:
+                current_time = datetime.now().isoformat()
+                logger.info(f"Bot status check at {current_time}")
+                
                 me = await bot.get_me()
                 logger.info(f"Bot is connected as @{me.username} (ID: {me.id})")
                 
                 # Check webhook status in production
                 if IS_PRODUCTION:
-                    webhook_info = await bot.get_webhook_info()
-                    logger.info(f"Webhook status: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
-                    
-                    # If webhook is not set correctly, try to set it again
-                    if webhook_domain and (not webhook_info.url or webhook_info.url != f"https://{webhook_domain}{webhook_path}"):
-                        logger.warning("Webhook not set correctly, resetting...")
-                        webhook_url = f"https://{webhook_domain}{webhook_path}"
-                        await bot.delete_webhook()
-                        await bot.set_webhook(webhook_url)
-                        logger.info(f"Webhook reset to: {webhook_url}")
-            except Exception as e:
-                logger.error(f"Error checking bot status: {e}")
+                    try:
+                        webhook_info = await bot.get_webhook_info()
+                        logger.info(f"Webhook status: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
+                        
+                        # If webhook is not set correctly, try to set it again
+                        if webhook_domain and (not webhook_info.url or webhook_info.url != f"https://{webhook_domain}{webhook_path}"):
+                            logger.warning("Webhook not set correctly, resetting...")
+                            webhook_url = f"https://{webhook_domain}{webhook_path}"
+                            await bot.delete_webhook()
+                            await bot.set_webhook(webhook_url)
+                            logger.info(f"Webhook reset to: {webhook_url}")
+                        
+                        # Reset retry count on success
+                        retry_count = 0
+                    except Exception as webhook_error:
+                        logger.error(f"Error checking webhook: {webhook_error}")
+                        retry_count += 1
+                        
+                        # If we've failed multiple times, try to reset the webhook
+                        if retry_count >= 3:
+                            logger.warning(f"Multiple webhook check failures ({retry_count}), attempting reset")
+                            try:
+                                await bot.delete_webhook(drop_pending_updates=True)
+                                if webhook_domain:
+                                    webhook_url = f"https://{webhook_domain}{webhook_path}"
+                                    await bot.set_webhook(webhook_url)
+                                    logger.info(f"Webhook reset to: {webhook_url}")
+                                else:
+                                    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+                                    if railway_domain:
+                                        webhook_url = f"https://{railway_domain}{webhook_path}"
+                                        await bot.set_webhook(webhook_url)
+                                        logger.info(f"Webhook reset using RAILWAY_PUBLIC_DOMAIN: {webhook_url}")
+                            except Exception as reset_error:
+                                logger.error(f"Failed to reset webhook: {reset_error}")
+            except Exception as check_error:
+                logger.error(f"Error during bot status check: {check_error}")
                 logger.error(traceback.format_exc())
             
             # Wait for 5 minutes
             await asyncio.sleep(300)
-        
     except Exception as e:
-        logger.error(f"Unhandled error in main function: {e}")
-        logger.exception(traceback.format_exc())
+        logger.error(f"Fatal error in main function: {e}")
+        logger.error(traceback.format_exc())
+        raise
 
 if __name__ == "__main__":
-    # Handle any critical exceptions
     try:
-        # Run the async application
+        logger.info("Initializing main bot...")
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped manually")
     except Exception as e:
-        logger.critical(f"Critical error: {e}")
-        logger.exception(traceback.format_exc())
+        logger.exception("Main bot exited due to an error:")
+        sys.exit(1)
