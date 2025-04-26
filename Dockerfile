@@ -15,8 +15,13 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Copy requirements file
 COPY requirements.txt .
+
+# First install asyncpg explicitly to ensure it's properly installed
+RUN pip install --no-cache-dir asyncpg>=0.27.0
+
+# Then install the rest of the requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code

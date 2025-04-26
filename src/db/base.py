@@ -118,6 +118,18 @@ def get_async_engine(database_url=None):
     if database_url:
         # Create a new engine with the specified URL
         from sqlalchemy.ext.asyncio import create_async_engine
+        
+        # Force the use of asyncpg by explicitly replacing the dialect in the URL
+        if database_url.startswith('postgresql://') or database_url.startswith('postgres://'):
+            # Replace 'postgresql://' or 'postgres://' with 'postgresql+asyncpg://'
+            if database_url.startswith('postgresql://'):
+                database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+            else:
+                database_url = database_url.replace('postgres://', 'postgresql+asyncpg://', 1)
+            
+            logger.info(f"Enforcing asyncpg driver with URL: {database_url[:20]}...")
+        
+        # Create the engine with the processed URL
         return create_async_engine(
             database_url,
             echo=settings.debug,
@@ -126,7 +138,9 @@ def get_async_engine(database_url=None):
             pool_recycle=300,
             pool_timeout=30,
             pool_size=5,
-            max_overflow=10
+            max_overflow=10,
+            # Explicitly set driver_name to asyncpg for PostgreSQL
+            connect_args={"driver_name": "asyncpg"} if "postgresql" in database_url or "postgres" in database_url else {}
         )
     # Otherwise, return the global engine
     return engine
