@@ -3151,7 +3151,6 @@ def register_handlers(dp: Dispatcher) -> None:
     
     # Add Question
     dp.message.register(on_add_question, Command("add_question"))
-    dp.message.register(on_add_question, F.text == "Add Question")  # Add handler for text button
     dp.message.register(process_new_question_text, QuestionFlow.creating_question)
     dp.message.register(process_new_question_text, QuestionFlow.reviewing_question)
     dp.callback_query.register(on_confirm_add_question, F.data.startswith("confirm_add_question"))
