@@ -6,8 +6,8 @@ dockerfilePath = "Dockerfile"
 
 [[services]]
 name = "allkinds-team-bot" # Ensure this matches your service name in Railway
-# Add diagnostic commands before the python command
-startCommand = "pwd && ls -la && echo PYTHONPATH is: $PYTHONPATH && echo --- Starting Python --- && python3 -m src.bot.main"
+# Keep the app running with a simple wait command after starting the bot
+startCommand = "python3 -m src.bot.main & sleep 60 && tail -f logs/bot_*.log"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10  # Increase max retries before giving up
 healthcheckPath = "/health" # Add healthcheck path to keep the service active
