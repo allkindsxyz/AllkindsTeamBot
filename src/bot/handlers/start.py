@@ -3883,12 +3883,22 @@ async def on_confirm_group_delete(callback: types.CallbackQuery, state: FSMConte
         await session.execute(stmt)
         await session.commit()
         
-        logger.info(f"Group {group_id} ({group.name}) marked as inactive by user {db_user.id}")
+        # Add more detailed logging for debugging
+        logger.info(f"Group {group_id} ({group.name}) marked as inactive (soft deleted) by user {db_user.id}")
+        logger.info(f"Group object before soft deletion: is_active={group.is_active}")
+        
+        # Re-fetch the group to verify changes
+        updated_group = await group_repo.get(session, group_id)
+        if updated_group:
+            logger.info(f"Group after soft deletion: is_active={updated_group.is_active}")
+        else:
+            logger.error(f"Failed to re-fetch group {group_id} after marking inactive")
         
         # Clear state data related to this group
         data = await state.get_data()
         if data.get("current_group_id") == group_id:
             await state.update_data(current_group_id=None, current_group_name=None)
+            logger.info(f"Cleared group {group_id} from user state")
         
         # Show success message
         await callback.message.edit_text(f"Group <b>{group.name}</b> has been deleted.", parse_mode="HTML")
