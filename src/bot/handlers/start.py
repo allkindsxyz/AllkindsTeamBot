@@ -111,140 +111,133 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
     """Handle /start command."""
     import base64
     
-    # Basic logging
-    logger.info(f"Start command triggered from user {message.from_user.id}")
+    # EXTENSIVE DEBUG LOGGING
+    logger.info(f"========== START COMMAND TRIGGERED ==========")
+    logger.info(f"From user: {message.from_user.id} ({message.from_user.username or 'no username'})")
+    logger.info(f"Message text: {message.text}")
+    logger.info(f"Command object: {command}")
+    logger.info(f"State available: {state is not None}")
+    logger.info(f"Session available: {session is not None}")
     
-    # Extract potential command args from the message text directly
-    args = None
-    if message.text and message.text.startswith("/start "):
-        args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
-        logger.info(f"DEBUG: Extracted args from message text: {args}")
-    # Also check the command object if available
-    elif command and command.args:
-        args = command.args
-        logger.info(f"DEBUG: Args from command object: {args}")
-    
-    if args:
-        try:
-            # Add padding back if needed
-            padding_needed = len(args) % 4
-            if padding_needed:
-                padded_args = args + '=' * (4 - padding_needed)
-            else:
-                padded_args = args
-            
-            # Try to decode as base64
+    try:
+        # Basic logging
+        logger.info(f"Start command triggered from user {message.from_user.id}")
+        
+        # Extract potential command args from the message text directly
+        args = None
+        if message.text and message.text.startswith("/start "):
+            args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+            logger.info(f"DEBUG: Extracted args from message text: {args}")
+        # Also check the command object if available
+        elif command and command.args:
+            args = command.args
+            logger.info(f"DEBUG: Args from command object: {args}")
+        
+        if args:
+            logger.info(f"Processing start command with args: {args}")
             try:
-                decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
-                logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                # Add padding back if needed
+                padding_needed = len(args) % 4
+                if padding_needed:
+                    padded_args = args + '=' * (4 - padding_needed)
+                else:
+                    padded_args = args
                 
-                # Check if it's a group invite (g{id})
-                if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
-                    group_id = int(decoded_payload[1:])
-                    logger.info(f"Base64 decoded invite for group {group_id}")
+                # Try to decode as base64
+                try:
+                    decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
+                    logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                    
+                    # Check if it's a group invite (g{id})
+                    if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
+                        group_id = int(decoded_payload[1:])
+                        logger.info(f"Base64 decoded invite for group {group_id}")
+                        await handle_group_invite(message, group_id, state, session)
+                        return
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 payload: {e}")
+                
+                # Fall back to older formats (for backward compatibility)
+                if args.startswith('join_') and args[5:].isdigit():
+                    group_id = int(args[5:])
+                    logger.info(f"Direct 'join_X' format invite for group {group_id}")
                     await handle_group_invite(message, group_id, state, session)
                     return
             except Exception as e:
-                logger.warning(f"Failed to decode base64 payload: {e}")
-            
-            # Fall back to older formats (for backward compatibility)
-            if args.startswith('join_') and args[5:].isdigit():
-                group_id = int(args[5:])
-                logger.info(f"Direct 'join_X' format invite for group {group_id}")
-                await handle_group_invite(message, group_id, state, session)
-                return
-        except Exception as e:
-            logger.error(f"Error processing start command args: {e}")
-    
-    user_tg = message.from_user
-    logger.info(f"User {user_tg.id} started the bot")
-    
-    # Ensure session is available (dependency injection handles this)
-    if not session:
-        logger.error("Database session not available in cmd_start")
-        await message.answer("Sorry, there was a problem connecting to the database.")
-        return
+                logger.error(f"Error processing start command args: {e}")
+                logger.exception("Full exception details:")
         
-    # Get or create user in DB - Convert Telegram user to dict manually
-    user_dict = {
-        "id": user_tg.id,
-        "first_name": user_tg.first_name,
-        "last_name": user_tg.last_name,
-        "username": user_tg.username,
-        "is_bot": user_tg.is_bot
-    }
-    db_user, created = await user_repo.get_or_create_user(session, user_dict)
-    if created:
-        logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
-    else:
-        logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
-
-    # Check if user belongs to any groups
-    user_groups = await group_repo.get_user_groups(session, db_user.id)
-    
-    # Create state if it doesn't exist
-    if not state:
-        state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
-    
-    # If user is already in groups, show the group menu
-    if user_groups:
-        # User is already in some group
-        # For now, consider that a user has just one group
-        group = user_groups[0]  # Take the first group
+        user_tg = message.from_user
+        logger.info(f"User {user_tg.id} started the bot")
         
-        # Verify the group still exists
-        if not await group_repo.get(session, group.id):
-            logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
-            await message.answer("This group was deleted.")
-            await show_welcome_menu(message)
+        # Ensure session is available (dependency injection handles this)
+        if not session:
+            logger.error("Database session not available in cmd_start")
+            await message.answer("Sorry, there was a problem connecting to the database.")
             return
+            
+        # Get or create user in DB - Convert Telegram user to dict manually
+        user_dict = {
+            "id": user_tg.id,
+            "first_name": user_tg.first_name,
+            "last_name": user_tg.last_name,
+            "username": user_tg.username,
+            "is_bot": user_tg.is_bot
+        }
         
-        logger.info(f"User {user_tg.id} is in group {group.id}. Showing group info.")
+        logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
+        db_user, created = await user_repo.get_or_create_user(session, user_dict)
+        if created:
+            logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        else:
+            logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+
+        # Check if user belongs to any groups
+        logger.info(f"Checking if user {db_user.id} belongs to any groups")
+        user_groups = await group_repo.get_user_groups(session, db_user.id)
+        logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
         
-        # Get user's points balance
-        points = db_user.points
+        # Create state if it doesn't exist
+        if not state:
+            logger.info("State not provided, creating a new one")
+            state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
         
-        # Split the welcome message into two parts:
-        # 1. Welcome message with menu buttons
-        welcome_text = f"Welcome back to <b>{group.name}</b>!"
+        # If user is already in groups, show the group menu
+        if user_groups:
+            # User is already in some group
+            # For now, consider that a user has just one group
+            group = user_groups[0]  # Take the first group
+            logger.info(f"User is in group {group.id}, showing group menu")
+            
+            # Verify the group still exists
+            if not await group_repo.get(session, group.id):
+                logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+                await message.answer("This group was deleted.")
+                await show_welcome_menu(message)
+                return
         
-        # 2. Balance message with inline button
-        balance_text = f"Your balance: 💎 {points} points"
-        
-        # Update state with current group
-        await state.update_data(current_group_id=group.id, current_group_name=group.name)
-        await state.set_state(QuestionFlow.viewing_question)
-        
-        # Get count of unanswered questions
-        unanswered_count = await get_unanswered_question_count(session, db_user.id, group.id)
-        
-        # Get count of answered questions
-        answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group.id)
-        answered_count = len(answers)
-        
-        # Get the reply keyboard with points balance for the welcome message
-        reply_keyboard = get_group_menu_reply_keyboard(current_section="questions", balance=points)
-        
-        # Create inline keyboard with Load previously answered questions button for the balance message
-        inline_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(
-                text=f"📋 Load answered questions ({answered_count})",
-                callback_data="load_answered_questions"
-            )]
-        ])
-        
-        # Send welcome message with menu buttons (reply keyboard)
-        await message.answer(welcome_text, reply_markup=reply_keyboard, parse_mode="HTML")
-        
-        # Send balance message with inline keyboard
-        await message.answer(balance_text, reply_markup=inline_keyboard, parse_mode="HTML")
-        
-        # Check if there are new questions to answer and display the first one
-        await check_and_display_next_question(message, db_user, group.id, state, session)
-    else:
-        # User is not in any group, show welcome menu with create/join options
-        logger.info(f"User {user_tg.id} is not in any groups. Showing welcome menu.")
-        await show_welcome_menu(message)
+            # Show the group menu
+            await show_group_menu(
+                message=message,
+                group_id=group.id,
+                group_name=group.name,
+                state=state,
+                session=session
+            )
+        else:
+            # User is not in any group yet
+            logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
+            await show_welcome_menu(message)
+    except Exception as e:
+        logger.error(f"Unexpected error in cmd_start: {e}")
+        logger.exception("Full exception traceback:")
+        # Try to respond to user if possible
+        try:
+            await message.answer("Sorry, an unexpected error occurred. Please try again later.")
+        except:
+            pass
+    
+    logger.info("========== END OF START COMMAND ==========")
 
 
 async def display_single_question(message: types.Message, question, db_user, session: AsyncSession) -> None:
