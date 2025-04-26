@@ -4189,3 +4189,67 @@ async def process_group_description_edit(message: types.Message, state: FSMConte
         await message.answer("Error updating the group description. Please try again.")
         await session.rollback()
 
+
+async def on_use_corrected_text(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle when the user chooses to use the corrected text."""
+    user_data = await state.get_data()
+    corrected_text = user_data.get("corrected_question_text", "")
+    correction_msg_id = user_data.get("correction_msg_id")
+    
+    # Update the state with corrected text as the new question text
+    await state.update_data(new_question_text=corrected_text)
+    
+    # Delete the correction message
+    if correction_msg_id:
+        try:
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id,
+                message_id=correction_msg_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete correction message: {e}")
+    
+    # Show confirmation with the corrected text
+    confirmation_text = f"Your question:\n\n{corrected_text}\n\nIs this correct and ready to be added?"
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Yes", callback_data="confirm_add_question"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_add_question"),
+        ]
+    ])
+    confirmation_message = await callback.message.answer(confirmation_text, reply_markup=keyboard)
+    await state.update_data(confirmation_message_id=confirmation_message.message_id)
+    await state.set_state(QuestionFlow.reviewing_question)
+
+
+async def on_use_original_text(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle when the user chooses to use the original text."""
+    user_data = await state.get_data()
+    original_text = user_data.get("original_question_text", "")
+    correction_msg_id = user_data.get("correction_msg_id")
+    
+    # Update the state with original text as the new question text
+    await state.update_data(new_question_text=original_text)
+    
+    # Delete the correction message
+    if correction_msg_id:
+        try:
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id,
+                message_id=correction_msg_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete correction message: {e}")
+    
+    # Show confirmation with the original text
+    confirmation_text = f"Your question:\n\n{original_text}\n\nIs this correct and ready to be added?"
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Yes", callback_data="confirm_add_question"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_add_question"),
+        ]
+    ])
+    confirmation_message = await callback.message.answer(confirmation_text, reply_markup=keyboard)
+    await state.update_data(confirmation_message_id=confirmation_message.message_id)
+    await state.set_state(QuestionFlow.reviewing_question)
+
