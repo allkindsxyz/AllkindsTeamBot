@@ -112,3 +112,48 @@ async def get_session() -> AsyncSession:
 def get_engine():
     """Get the SQLAlchemy engine."""
     return engine 
+
+def get_async_engine(database_url=None):
+    """Get the SQLAlchemy async engine, optionally creating a new one with the specified URL."""
+    if database_url:
+        # Create a new engine with the specified URL
+        from sqlalchemy.ext.asyncio import create_async_engine
+        return create_async_engine(
+            database_url,
+            echo=settings.debug,
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30,
+            pool_size=5,
+            max_overflow=10
+        )
+    # Otherwise, return the global engine
+    return engine
+
+async def init_models(engine):
+    """Initialize database models."""
+    from sqlalchemy import inspect, text
+    
+    logger.info("Initializing database models...")
+    
+    try:
+        async with engine.begin() as conn:
+            # Test connection
+            await conn.execute(text("SELECT 1"))
+            logger.info("Database connection successful")
+            
+            # Check if tables exist
+            tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+            
+            if not tables:
+                logger.info("No tables found. Creating database schema...")
+                await conn.run_sync(Base.metadata.create_all)
+                logger.info("Database schema created.")
+            else:
+                logger.info(f"Found existing tables: {tables}")
+    except Exception as e:
+        logger.error(f"Error initializing database models: {e}")
+        # Don't raise - let the app try to continue
+        
+    logger.info("Database models initialization complete.") 
