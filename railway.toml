@@ -6,8 +6,8 @@ dockerfilePath = "Dockerfile"
 
 [[services]]
 name = "allkinds-team-bot" # Ensure this matches your service name in Railway
-# Use our dedicated script for keeping the container alive
-startCommand = "./keep_alive.sh"
+# Use our robust runner script
+startCommand = "chmod +x run_bot_continuously.sh && ./run_bot_continuously.sh"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10  # Increase max retries before giving up
 healthcheckPath = "/health" # Add healthcheck path to keep the service active

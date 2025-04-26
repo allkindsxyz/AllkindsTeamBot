@@ -115,6 +115,21 @@ def remove_lock_file():
     except Exception as e:
         logger.error(f"Failed to remove lock file: {e}")
 
+def register_middlewares(dp: Dispatcher):
+    """Register middlewares for the dispatcher."""
+    logger.info("Registering middlewares")
+    
+    # Create database session pool
+    session_pool = async_session_factory()
+    
+    # Register database middleware
+    dp.update.middleware(DbSessionMiddleware(session_pool))
+    
+    # Register logging middleware
+    dp.update.middleware(StateLoggingMiddleware())
+    
+    logger.info("Middlewares registered")
+
 async def on_shutdown(dispatcher: Dispatcher, bot: Bot):
     """Handle shutdown processes."""
     logger.info("Shutting down the bot")
