@@ -186,72 +186,79 @@ async def main():
             # Delete webhook for development
             await bot.delete_webhook(drop_pending_updates=True)
             logger.info("Webhook deleted for development mode")
-        
-        # Start web server
-        port = int(os.environ.get("PORT", 8080))
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        
-        await site.start()
-        logger.info(f"Web server started on port {port}")
-        
-        # Keep the service running
-        logger.info("Bot is running indefinitely...")
-        
-        # Keep alive - log periodic status and check webhook
-        retry_count = 0
-        while True:
-            try:
-                current_time = datetime.now().isoformat()
-                logger.info(f"Bot status check at {current_time}")
-                
-                me = await bot.get_me()
-                logger.info(f"Bot is connected as @{me.username} (ID: {me.id})")
-                
-                # Check webhook status in production
-                if IS_PRODUCTION:
-                    try:
-                        webhook_info = await bot.get_webhook_info()
-                        logger.info(f"Webhook status: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
-                        
-                        # If webhook is not set correctly, try to set it again
-                        if webhook_domain and (not webhook_info.url or webhook_info.url != f"https://{webhook_domain}{webhook_path}"):
-                            logger.warning("Webhook not set correctly, resetting...")
-                            webhook_url = f"https://{webhook_domain}{webhook_path}"
-                            await bot.delete_webhook()
-                            await bot.set_webhook(webhook_url)
-                            logger.info(f"Webhook reset to: {webhook_url}")
-                        
-                        # Reset retry count on success
-                        retry_count = 0
-                    except Exception as webhook_error:
-                        logger.error(f"Error checking webhook: {webhook_error}")
-                        retry_count += 1
-                        
-                        # If we've failed multiple times, try to reset the webhook
-                        if retry_count >= 3:
-                            logger.warning(f"Multiple webhook check failures ({retry_count}), attempting reset")
-                            try:
-                                await bot.delete_webhook(drop_pending_updates=True)
-                                if webhook_domain:
-                                    webhook_url = f"https://{webhook_domain}{webhook_path}"
-                                    await bot.set_webhook(webhook_url)
-                                    logger.info(f"Webhook reset to: {webhook_url}")
-                                else:
-                                    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-                                    if railway_domain:
-                                        webhook_url = f"https://{railway_domain}{webhook_path}"
-                                        await bot.set_webhook(webhook_url)
-                                        logger.info(f"Webhook reset using RAILWAY_PUBLIC_DOMAIN: {webhook_url}")
-                            except Exception as reset_error:
-                                logger.error(f"Failed to reset webhook: {reset_error}")
-            except Exception as check_error:
-                logger.error(f"Error during bot status check: {check_error}")
-                logger.error(traceback.format_exc())
             
-            # Wait for 5 minutes
-            await asyncio.sleep(300)
+            # Start polling instead of webhook in development
+            logger.info("Starting polling in development mode")
+            try:
+                await dp.start_polling(bot, allowed_updates=["message", "callback_query", "my_chat_member", "edited_message", "chat_member"])
+            except Exception as e:
+                logger.error(f"Error starting polling: {e}")
+            
+            # Start web server for webhook mode
+            port = int(os.environ.get("PORT", 8080))
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", port)
+            
+            await site.start()
+            logger.info(f"Web server started on port {port}")
+            
+            # Keep the service running
+            logger.info("Bot is running indefinitely...")
+            
+            # Keep alive - log periodic status and check webhook
+            retry_count = 0
+            while True:
+                try:
+                    current_time = datetime.now().isoformat()
+                    logger.info(f"Bot status check at {current_time}")
+                    
+                    me = await bot.get_me()
+                    logger.info(f"Bot is connected as @{me.username} (ID: {me.id})")
+                    
+                    # Check webhook status in production
+                    if IS_PRODUCTION:
+                        try:
+                            webhook_info = await bot.get_webhook_info()
+                            logger.info(f"Webhook status: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
+                            
+                            # If webhook is not set correctly, try to set it again
+                            if webhook_domain and (not webhook_info.url or webhook_info.url != f"https://{webhook_domain}{webhook_path}"):
+                                logger.warning("Webhook not set correctly, resetting...")
+                                webhook_url = f"https://{webhook_domain}{webhook_path}"
+                                await bot.delete_webhook()
+                                await bot.set_webhook(webhook_url)
+                                logger.info(f"Webhook reset to: {webhook_url}")
+                            
+                            # Reset retry count on success
+                            retry_count = 0
+                        except Exception as webhook_error:
+                            logger.error(f"Error checking webhook: {webhook_error}")
+                            retry_count += 1
+                            
+                            # If we've failed multiple times, try to reset the webhook
+                            if retry_count >= 3:
+                                logger.warning(f"Multiple webhook check failures ({retry_count}), attempting reset")
+                                try:
+                                    await bot.delete_webhook(drop_pending_updates=True)
+                                    if webhook_domain:
+                                        webhook_url = f"https://{webhook_domain}{webhook_path}"
+                                        await bot.set_webhook(webhook_url)
+                                        logger.info(f"Webhook reset to: {webhook_url}")
+                                    else:
+                                        railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+                                        if railway_domain:
+                                            webhook_url = f"https://{railway_domain}{webhook_path}"
+                                            await bot.set_webhook(webhook_url)
+                                            logger.info(f"Webhook reset using RAILWAY_PUBLIC_DOMAIN: {webhook_url}")
+                                except Exception as reset_error:
+                                    logger.error(f"Failed to reset webhook: {reset_error}")
+                except Exception as check_error:
+                    logger.error(f"Error during bot status check: {check_error}")
+                    logger.error(traceback.format_exc())
+                
+                # Wait for 5 minutes
+                await asyncio.sleep(300)
     except Exception as e:
         logger.error(f"Fatal error in main function: {e}")
         logger.error(traceback.format_exc())

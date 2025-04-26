@@ -109,6 +109,7 @@ async def get_unanswered_question_count(session: AsyncSession, user_id: int, gro
 
 async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
     """Handle /start command."""
+    import base64
     
     # Basic logging
     logger.info(f"Start command triggered from user {message.from_user.id}")
@@ -124,33 +125,36 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
         logger.info(f"DEBUG: Args from command object: {args}")
     
     if args:
-        # Special case for known deep link "ZzE" = base64("g1")
-        if args == "ZzE":
-            logger.info("DEBUG: Found exact match for ZzE (g1)")
-            group_id = 1
-            await handle_group_invite(message, group_id, state, session)
-            return
-        
-        # General base64 decode attempt
         try:
-            decoded_args = base64.b64decode(args).decode('utf-8')
-            logger.info(f"DEBUG: Decoded args from base64: {decoded_args}")
+            # Add padding back if needed
+            padding_needed = len(args) % 4
+            if padding_needed:
+                padded_args = args + '=' * (4 - padding_needed)
+            else:
+                padded_args = args
             
-            # Check if it's an invite link in decoded form
-            if decoded_args.startswith('g') and decoded_args[1:].isdigit():
-                group_id = int(decoded_args[1:])
-                logger.info(f"DEBUG: Deep link join for group {group_id}")
+            # Try to decode as base64
+            try:
+                decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
+                logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                
+                # Check if it's a group invite (g{id})
+                if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
+                    group_id = int(decoded_payload[1:])
+                    logger.info(f"Base64 decoded invite for group {group_id}")
+                    await handle_group_invite(message, group_id, state, session)
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to decode base64 payload: {e}")
+            
+            # Fall back to older formats (for backward compatibility)
+            if args.startswith('join_') and args[5:].isdigit():
+                group_id = int(args[5:])
+                logger.info(f"Direct 'join_X' format invite for group {group_id}")
                 await handle_group_invite(message, group_id, state, session)
                 return
         except Exception as e:
-            logger.info(f"DEBUG: Not a valid base64 string, using raw args: {e}")
-        
-        # Check if it's an invite link in raw form
-        if args.startswith('g') and args[1:].isdigit():
-            group_id = int(args[1:])
-            logger.info(f"DEBUG: Direct deep link join for group {group_id}")
-            await handle_group_invite(message, group_id, state, session)
-            return
+            logger.error(f"Error processing start command args: {e}")
     
     user_tg = message.from_user
     logger.info(f"User {user_tg.id} started the bot")
@@ -182,69 +186,7 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
     if not state:
         state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
     
-    # Check if there's a deep link payload
-    if command and command.args:
-        raw_arg = command.args
-        logger.info(f"Received start command with raw args: {raw_arg}")
-        payload = None
-        
-        try:
-            # Attempt base64 decoding first
-            missing_padding = len(raw_arg) % 4
-            if missing_padding:
-                padded_arg = raw_arg + '=' * (4 - missing_padding)
-            else:
-                padded_arg = raw_arg
-            
-            decoded_bytes = base64.urlsafe_b64decode(padded_arg)
-            payload = decoded_bytes.decode('utf-8')
-            logger.info(f"Successfully base64 decoded payload: {payload}")
-            
-        except (base64.binascii.Error, UnicodeDecodeError) as decode_error:
-            # If decoding fails, assume the raw argument is the payload
-            logger.warning(f"Base64 decode failed ({decode_error}), using raw arg as payload: {raw_arg}")
-            payload = raw_arg
-        except Exception as e:
-            # Catch any other unexpected errors during decoding attempt
-            logger.error(f"Unexpected error during payload decoding attempt for '{raw_arg}': {e}")
-            payload = None # Ensure payload is None if error occurs
-            
-        # Process the payload if we have one
-        if payload:
-            logger.info(f"Processing payload: {payload}")
-            if payload.startswith("g"):
-                try:
-                    group_id = int(payload[1:])
-                    
-                    # Check if user is already in this group
-                    is_member = False
-                    for group in user_groups:
-                        if group.id == group_id:
-                            is_member = True
-                            break
-                    
-                    if is_member:
-                        # User is already in this group, go directly to questions
-                        logger.info(f"User {user_tg.id} is already in group {group_id}. Going directly to questions.")
-                        group = await group_repo.get(session, group_id)
-                        if group:
-                            await state.update_data(current_group_id=group_id, current_group_name=group.name)
-                            await state.set_state(QuestionFlow.viewing_question)
-                            await on_show_questions(message, state, session)
-                            return
-                    else:
-                    # User is not in this group, ask to join
-                        await handle_group_invite(message, group_id, state, session)
-                        return
-                        
-                except ValueError as e:
-                    logger.warning(f"Invalid group ID in payload: {payload}, error: {e}")
-            else:
-                logger.warning(f"Unknown payload format: {payload}")
-        else:
-            logger.error("Failed to obtain a valid payload from start argument.")
-
-    # No valid deep link, check if user is in any groups
+    # If user is already in groups, show the group menu
     if user_groups:
         # User is already in some group
         # For now, consider that a user has just one group
@@ -1076,7 +1018,11 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
     If text is None, will try to use an invisible character to keep the chat clean.
     """
     await state.update_data(current_group_id=group_id, current_group_name=group_name)
-    # Don't set viewing_question state here, let the specific action handler do it
+    # Set the viewing_question state to enable direct question entry
+    current_state = await state.get_state()
+    if current_state != QuestionFlow.creating_question and current_state != QuestionFlow.reviewing_question:
+        await state.set_state(QuestionFlow.viewing_question)
+        logger.info(f"Setting state to QuestionFlow.viewing_question for user {message.from_user.id}")
     
     # Get user points if session is provided
     points = 0
@@ -1098,8 +1044,8 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
     )
 
     if minimal_text_needed:
-        # Use a minimal, non-empty text like an emoji
-        display_text = "⌨️"
+        # Use a non-empty, minimal text (space with zero-width joiners to ensure it's visible but minimal)
+        display_text = "‎‎ ‎" # Using spaces and zero-width characters to ensure it's non-empty
         # Try editing the previous menu message if possible
         data = await state.get_data()
         prev_menu_msg_id = data.get("group_menu_msg_id")
@@ -3206,6 +3152,10 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_join_group_callback, F.data == "join_group")
     dp.callback_query.register(on_go_to_group, F.data.startswith("go_to_group:"))
     
+    # Chat handlers
+    dp.callback_query.register(on_start_anon_chat, F.data.startswith("start_anon_chat:"))
+    dp.callback_query.register(handle_cancel_match, F.data == "cancel_match")
+    
     # Group Management
     dp.callback_query.register(on_leave_group_callback, F.data.startswith("leave_group:"))
     dp.callback_query.register(on_confirm_leave_group, F.data.startswith("confirm_leave:"))
@@ -3222,6 +3172,12 @@ def register_handlers(dp: Dispatcher) -> None:
     
     # Debugging catch-all - register this LAST to catch any unhandled callbacks
     dp.callback_query.register(debug_callback)
+    
+    # Direct question entry - recognize messages that end with ? and are in a group context
+    dp.message.register(handle_direct_question_entry, lambda m: m.text and m.text.strip().endswith("?"))
+    
+    # Also allow direct question entry when in the viewing_question state (to match previous behavior)
+    dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.viewing_question)
     
     # Catch-all for text messages (register last for text handlers)
     # Only enable in development mode
@@ -4147,6 +4103,23 @@ async def handle_instructions_message(message: types.Message, state: FSMContext,
         await message.answer("Please select a group first.")
         return
     
+    # Clean up previous instructions or group info messages
+    previous_instructions_msg_id = data.get("instructions_msg_id")
+    previous_group_info_msg_id = data.get("group_info_msg_id")
+    
+    if previous_instructions_msg_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=previous_instructions_msg_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete previous instructions message: {e}")
+    
+    if previous_group_info_msg_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=previous_group_info_msg_id)
+            await state.update_data(group_info_msg_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete previous group info message: {e}")
+    
     instructions_text = (
         "📝 <b>Instructions</b>\n\n"
         "• Answer questions with yes/no to find matches\n"
@@ -4157,7 +4130,13 @@ async def handle_instructions_message(message: types.Message, state: FSMContext,
     )
     
     try:
-        await message.answer(instructions_text, parse_mode="HTML")
+        # Send instructions and store the message ID for future cleanup
+        instructions_msg = await message.answer(instructions_text, parse_mode="HTML")
+        await state.update_data(instructions_msg_id=instructions_msg.message_id)
+        
+        # Set state to viewing_question to enable direct question entry
+        await state.set_state(QuestionFlow.viewing_question)
+        
         # Show group menu again to maintain context
         if group_id and group_name:
             await show_group_menu(message, group_id, group_name, state, session=session)
@@ -4176,13 +4155,32 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
     if not group_id or not session:
         await message.answer("Please select a group first or reconnect to the bot.")
         return
+        
+    # Clean up previous instructions or group info messages
+    previous_instructions_msg_id = data.get("instructions_msg_id")
+    previous_group_info_msg_id = data.get("group_info_msg_id")
+    
+    if previous_instructions_msg_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=previous_instructions_msg_id)
+            await state.update_data(instructions_msg_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete previous instructions message: {e}")
+    
+    if previous_group_info_msg_id:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=previous_group_info_msg_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete previous group info message: {e}")
     
     try:
         # Get group details from database
         from src.db.models import Group
-        query = select(Group).where(Group.id == group_id)
-        result = await session.execute(query)
-        group = result.scalar_one_or_none()
+        from sqlalchemy import func, select
+        import base64
+        
+        # Get group details
+        group = await group_repo.get(session, group_id)
         
         if not group:
             await message.answer("Group information not found.")
@@ -4203,30 +4201,310 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
         result = await session.execute(query)
         question_count = result.scalar_one_or_none() or 0
         
+        # Get user from DB
+        user_tg = message.from_user
+        db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+        
+        # Check if user is a creator/admin of the group
+        is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+        
+        # Generate invite link for the group
+        # Create a payload with group information encoded in base64
+        payload = f"g{group_id}"
+        encoded_payload = base64.urlsafe_b64encode(payload.encode('utf-8')).decode('utf-8')
+        # Remove padding characters
+        encoded_payload = encoded_payload.rstrip("=")
+        
+        from aiogram.utils.deep_linking import create_start_link
+        invite_link = await create_start_link(message.bot, encoded_payload)
+        
         # Format group info message
         group_info = (
             f"📊 <b>{group.name}</b>\n\n"
             f"<i>{group.description or 'No description available'}</i>\n\n"
             f"👥 Members: {member_count}\n"
             f"❓ Questions: {question_count}\n"
-            f"🗓 Created: {group.created_at.strftime('%Y-%m-%d')}\n"
+            f"🗓 Created: {group.created_at.strftime('%Y-%m-%d')}\n\n"
+            f"📎 Share this link to invite others:\n{invite_link}"
         )
         
-        await message.answer(group_info, parse_mode="HTML")
+        # Create keyboard with appropriate buttons
+        buttons = []
+        
+        # Add Leave Group button for all members
+        buttons.append([types.InlineKeyboardButton(text="🚪 Leave Group", callback_data=f"leave_group:{group_id}")])
+        
+        # Add Manage Group button for creators
+        if is_creator:
+            buttons.append([types.InlineKeyboardButton(text="⚙️ Manage Group", callback_data=f"manage_group:{group_id}")])
+        
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        # Store the message ID for later deletion if needed
+        info_msg = await message.answer(group_info, reply_markup=keyboard, parse_mode="HTML")
+        await state.update_data(group_info_msg_id=info_msg.message_id)
+        
+        # Set state to viewing_question to enable direct question entry
+        await state.set_state(QuestionFlow.viewing_question)
+        
         # Show group menu again to maintain context
         await show_group_menu(message, group_id, group.name, state, session=session)
-    
     except Exception as e:
-        logger.error(f"Error getting group info: {e}")
-        await message.answer("Error fetching group information.")
+        logger.error(f"Error getting group info: {e}", exc_info=True)
+        # Just log the error without showing any messages
+        try:
+            # Get at least the group name for showing the menu
+            group = await group_repo.get(session, group_id)
+            if group:
+                await show_group_menu(message, group_id, group.name, state, session=session)
+        except Exception as inner_e:
+            logger.error(f"Failed to recover from group info error: {inner_e}", exc_info=True)
 
 
 async def handle_find_match_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
     """Handle the 'Find Match' button from the reply keyboard."""
     logger.info(f"User {message.from_user.id} pressed Find Match button")
     
-    # Redirect to the existing find match handler
-    await on_find_match(message, state, session)
+    # Get current data
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    
+    if not group_id:
+        await message.answer("Please select a group first.")
+        return
+    
+    # Clean up previous messages
+    previous_instructions_msg_id = data.get("instructions_msg_id")
+    previous_group_info_msg_id = data.get("group_info_msg_id")
+    previous_find_match_msg_id = data.get("find_match_msg_id")
+    
+    for msg_id in [previous_instructions_msg_id, previous_group_info_msg_id, previous_find_match_msg_id]:
+        if msg_id:
+            try:
+                await message.bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete previous message: {e}")
+    
+    # Clear stored message IDs
+    update_data = {
+        "instructions_msg_id": None,
+        "group_info_msg_id": None,
+        "find_match_msg_id": None
+    }
+    
+    # Retrieve the user from the database
+    db_user = await user_repo.get_by_telegram_id(session, message.from_user.id)
+    if not db_user:
+        await message.answer("❌ Your user profile couldn't be found. Please restart by clicking /start.")
+        return
+    
+    # Check if user has enough points (1 point required)
+    if db_user.points < FIND_MATCH_COST:
+        logger.info(f"User {db_user.id} tried to find match but has insufficient points ({db_user.points})")
+        await message.answer(
+            f"❌ You need at least {FIND_MATCH_COST} points to find a match. You currently have {db_user.points} points.\n\n"
+            "To earn more points, answer more questions in your group!"
+        )
+        return
+    
+    # Check if user has answered enough questions
+    answer_count = await get_answer_count(session, db_user.id, int(group_id))
+    if answer_count < MIN_QUESTIONS_FOR_MATCH:
+        logger.info(f"User {db_user.id} tried to find match but has only answered {answer_count} questions")
+        await message.answer(
+            f"❌ You need to answer at least {MIN_QUESTIONS_FOR_MATCH} questions to find a match.\n"
+            f"You've currently answered {answer_count} questions."
+        )
+        return
+    
+    # Get the group from the database
+    group = await group_repo.get(session, int(group_id))
+    if not group:
+        await message.answer("❌ Group not found. Please restart by clicking on the group link.")
+        return
+    
+    try:
+        # Find matches for the user in this group
+        logger.info(f"Finding matches for user {db_user.id} in group {group_id}")
+        
+        # Deduct points from the initiating user
+        db_user.points -= FIND_MATCH_COST
+        session.add(db_user)
+        await session.commit()
+        logger.info(f"Deducted {FIND_MATCH_COST} points from user {db_user.id}, new balance: {db_user.points}")
+        
+        # Find matches
+        match_results = await find_matches(session, db_user.id, int(group_id))
+        
+        if not match_results or len(match_results) == 0:
+            # No matches found
+            await message.answer(
+                "😔 No matches found at this time. Please try again later when more group members have answered questions."
+            )
+            
+            # Refund points since no matches were found
+            db_user.points += FIND_MATCH_COST
+            session.add(db_user)
+            await session.commit()
+            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to no matches, new balance: {db_user.points}")
+            
+            # Show group menu to maintain context
+            await show_group_menu(message, group_id, group.name, state, session=session)
+            return
+        
+        # Get the top match
+        matched_user_id, cohesion_score, common_questions, category_scores, category_counts = match_results[0]
+        logger.info(f"Found match: user {matched_user_id} with cohesion score {cohesion_score:.2f}, {common_questions} common questions")
+        
+        # Get the matched user from the database
+        matched_db_user = await user_repo.get(session, matched_user_id)
+        if not matched_db_user:
+            await message.answer("❌ An error occurred while retrieving your match information.")
+            return
+        
+        # Format the cohesion score as a percentage
+        cohesion_percentage = int(cohesion_score * 100)
+        
+        # Prepare the match confirmation message
+        confirmation_text = (
+            f"🎉 <b>We found you a match with a team member!</b>\n\n"
+            f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
+            f"You share perspectives on <b>{common_questions} questions</b>.\n\n"
+        )
+        
+        # Add category breakdown if available
+        if category_scores:
+            confirmation_text += "<b>Category Breakdown:</b>\n"
+            for category, cat_score in category_scores.items():
+                cat_percentage = int(cat_score * 100)  # Convert cohesion score to percentage
+                question_count = category_counts.get(category, 0)
+                confirmation_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
+            confirmation_text += "\n"
+        
+        # Try to get the nickname and photo for the matched user
+        matched_user_nickname = None
+        matched_user_photo = None
+        
+        try:
+            # Get the group member record for the matched user
+            matched_group_member = await group_repo.get_group_member(session, matched_user_id, int(group_id))
+            if matched_group_member:
+                matched_user_nickname = getattr(matched_group_member, "nickname", None)
+                matched_user_photo = getattr(matched_group_member, "photo_file_id", None)
+                logger.info(f"Found nickname '{matched_user_nickname}' and photo '{matched_user_photo}' for matched user {matched_user_id}")
+                
+                # Add the nickname to the confirmation text if available
+                if matched_user_nickname:
+                    confirmation_text = confirmation_text.replace("with a team member", f"with <b>{matched_user_nickname}</b>")
+        except Exception as e:
+            logger.warning(f"Error retrieving nickname/photo for matched user: {e}")
+            # Continue without nickname/photo
+        
+        # Check if there is an existing match record
+        existing_match = await get_match(session, db_user.id, matched_user_id, int(group_id))
+        
+        # Check if there is an existing chat session
+        existing_chat = await get_chat_by_participants(
+            session, db_user.id, matched_user_id, int(group_id)
+        )
+        
+        # If no existing match or chat, create a new match record
+        if not existing_match:
+            match_record = Match(
+                user1_id=db_user.id,
+                user2_id=matched_user_id,
+                group_id=int(group_id),
+                score=cohesion_score,
+                common_questions=common_questions,
+                created_at=datetime.now()
+            )
+            session.add(match_record)
+            await session.commit()
+            logger.info(f"Created new match record for users {db_user.id} and {matched_user_id} in group {group_id}")
+        
+        # Create keyboard with the Start Chat button
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(
+                text="🗣 Start Anonymous Chat",
+                callback_data=f"start_anon_chat:{matched_user_id}"
+            )],
+            [types.InlineKeyboardButton(
+                text="❌ Cancel",
+                callback_data="cancel_match"
+            )]
+        ])
+        
+        # Add notice about points being deducted
+        confirmation_text += f"👉 <b>{FIND_MATCH_COST} points</b> have been deducted from your account for this match.\n\n"
+        confirmation_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
+        
+        # Send the message with the matched user's photo if available
+        if matched_user_photo:
+            try:
+                match_msg = await message.answer_photo(
+                    photo=matched_user_photo,
+                    caption=confirmation_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                update_data["find_match_msg_id"] = match_msg.message_id
+            except Exception as e:
+                logger.warning(f"Error sending matched user photo: {e}")
+                # Fall back to text-only message
+                match_msg = await message.answer(
+                    text=confirmation_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                update_data["find_match_msg_id"] = match_msg.message_id
+        else:
+            # Send text-only message if no photo is available
+            match_msg = await message.answer(
+                text=confirmation_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            update_data["find_match_msg_id"] = match_msg.message_id
+        
+        # Update state to include the matched user ID
+        await state.update_data({
+            "matched_user_id": matched_user_id,
+            "cohesion_score": cohesion_score,
+            "common_questions": common_questions,
+            "category_scores": category_scores,
+            "category_counts": category_counts
+        })
+        
+        # Update state with cleanup data
+        await state.update_data(**update_data)
+        
+        # Set state to viewing_question to enable direct question entry
+        await state.set_state(QuestionFlow.viewing_question)
+        
+        # Show group menu to maintain context
+        await show_group_menu(message, group_id, group.name, state, session=session)
+        
+        logger.info(f"Match confirmation sent to user {db_user.id} for match with user {matched_user_id}")
+    except Exception as e:
+        logger.error(f"Error finding matches: {e}", exc_info=True)
+        await message.answer("An error occurred while finding matches. Please try again later.")
+        
+        # If we failed after deducting points, refund them
+        try:
+            db_user.points += FIND_MATCH_COST
+            session.add(db_user)
+            await session.commit()
+            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+        except Exception as refund_error:
+            logger.error(f"Failed to refund points to user {db_user.id}: {refund_error}")
+
+
+async def handle_add_question_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle the 'Add Question' button from the reply keyboard."""
+    logger.info(f"User {message.from_user.id} pressed Add Question button")
+    
+    # Redirect to the existing add question handler
+    await on_add_question(message, state, session)
 
 
 # Add this debugging helper function at the top of the file
@@ -4265,4 +4543,111 @@ async def echo_debug_handler(message: types.Message, state: FSMContext) -> None:
     is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
     if is_dev:
         await message.reply(f"Debug mode: Your message '{message.text}' was received, but no handler processed it.")
+
+
+async def handle_direct_question_entry(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle direct question entry from user (a message that ends with a question mark)."""
+    logger.info(f"Direct question entry detected: '{message.text}' from user {message.from_user.id}")
+    
+    if not session:
+        logger.error("No database session provided to handle_direct_question_entry")
+        await message.reply("Error: Could not process your question. Please try again later.")
+        return
+    
+    # Get current state data
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    group_name = data.get("current_group_name")
+    
+    # If user is not in a group context, we can't process the question
+    if not group_id or not group_name:
+        logger.info(f"User {message.from_user.id} tried to add question but not in a group context")
+        await message.reply("Please join or select a group first before adding questions.")
+        return
+    
+    # Set state for question creation
+    await state.set_state(QuestionFlow.creating_question)
+    question_text = message.text.strip()
+    
+    # Show waiting message while checking with OpenAI
+    waiting_msg = await message.reply("Processing your question, please wait...")
+    
+    # Check for spelling errors
+    has_spelling_errors, corrected_text = await check_spelling(question_text)
+    if has_spelling_errors:
+        # Delete waiting message
+        try:
+            await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete waiting message: {e}")
+            
+        # Store both versions of the text
+        await state.update_data(
+            original_question_text=question_text,
+            corrected_question_text=corrected_text
+        )
+        
+        # Show the correction suggestion with inline buttons
+        correction_text = f"Did you mean:\n\n<b>{corrected_text}</b>"
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text="✅ Yes, use this", callback_data="use_corrected_text"),
+                types.InlineKeyboardButton(text="❌ No, use original", callback_data="use_original_text"),
+            ]
+        ])
+        
+        correction_msg = await message.reply(correction_text, reply_markup=keyboard, parse_mode="HTML")
+        await state.update_data(
+            correction_msg_id=correction_msg.message_id,
+            original_question_message_id=message.message_id
+        )
+        await state.set_state(QuestionFlow.choosing_correction)
+        return
+    
+    # Check if it's a yes/no question using OpenAI
+    is_yes_no, yes_no_reason = await is_yes_no_question(question_text)
+    if not is_yes_no:
+        # Delete waiting message
+        try:
+            await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete waiting message: {e}")
+            
+        validation_msg = await message.reply("🙋‍♂️ Please ask a question that can be answered with Agree/Disagree.")
+        return
+    
+    # Check for duplicate questions
+    is_duplicate, duplicate_text, duplicate_id = await check_duplicate_question(question_text, group_id, session)
+    if is_duplicate:
+        # Delete waiting message
+        try:
+            await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete waiting message: {e}")
+            
+        duplicate_msg = await message.reply(f"🔄 This seems similar to an existing question. Please try a different question.")
+        return
+    
+    # Delete waiting message
+    try:
+        await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+    except Exception as e:
+        logger.warning(f"Failed to delete waiting message: {e}")
+    
+    # Store the question text and ask for confirmation
+    await state.update_data(
+        new_question_text=question_text,
+        original_question_message_id=message.message_id
+    )
+    
+    confirmation_text = f"Your question:\n\n{question_text}\n\nIs this correct and ready to be added?"
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Yes", callback_data="confirm_add_question"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_add_question"),
+        ]
+    ])
+    confirmation_message = await message.reply(confirmation_text, reply_markup=keyboard)
+    await state.update_data(confirmation_message_id=confirmation_message.message_id)
+    await state.set_state(QuestionFlow.reviewing_question)
 
