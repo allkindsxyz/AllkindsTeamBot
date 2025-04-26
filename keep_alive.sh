@@ -18,6 +18,14 @@ if [ -f "/app/prepare_env.sh" ]; then
   /app/prepare_env.sh echo "Environment prepared"
 fi
 
+# Fix asyncpg installation before starting the bot
+if [ -f "/app/pip_install_asyncpg.sh" ]; then
+  echo "Running asyncpg installation fix..."
+  chmod +x /app/pip_install_asyncpg.sh
+  /app/pip_install_asyncpg.sh
+  echo "Asyncpg installation fixed."
+fi
+
 # Wait a bit before starting the bot
 echo "Waiting 5 seconds before starting the bot..."
 sleep 5
