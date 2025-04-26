@@ -7,7 +7,7 @@ pkill -f "python3 -m src.communicator_bot.main" || true
 sleep 2
 
 # Bot tokens
-MAIN_BOT_TOKEN="8155919814:AAEMO6RHdkcBErONs70UNjBw4XEvN2vqJuo"
+MAIN_BOT_TOKEN="7910000886:AAHwuYKz8je_JSrpf53lXX8S6V5mfTqLd6Y"
 
 # Try multiple methods to close existing sessions
 echo "Forcefully disconnecting any active Telegram sessions..."

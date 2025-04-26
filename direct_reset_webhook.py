@@ -1,172 +1,140 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
-Direct Webhook Reset Script
-
-This script uses direct API calls to Telegram to reset the webhook without needing
-to execute it on Railway. You can run this locally.
-
-Usage:
-    python direct_reset_webhook.py --token YOUR_BOT_TOKEN --url YOUR_WEBHOOK_URL
+Direct webhook reset script for Allkinds bot.
+This bypasses the environment variables and directly
+deletes and optionally sets a webhook with the provided token and URL.
 """
 
-import requests
 import sys
-import logging
+import json
 import argparse
-from datetime import datetime
+import requests
+import logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
 
 def delete_webhook(token):
-    """Delete the current webhook."""
-    logger.info("Deleting current webhook...")
-    
+    """Delete the webhook for the bot"""
+    logger.info("Deleting webhook...")
     url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true"
-    response = requests.get(url)
     
-    if response.status_code == 200:
+    try:
+        response = requests.get(url)
         data = response.json()
+        
         if data.get('ok'):
-            logger.info("Webhook successfully deleted")
+            logger.info("✅ Webhook deleted successfully!")
             return True
         else:
-            logger.error(f"Failed to delete webhook: {data.get('description')}")
-    else:
-        logger.error(f"Error deleting webhook: {response.status_code} - {response.text}")
-    
-    return False
+            logger.error(f"❌ Failed to delete webhook: {data.get('description')}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Error deleting webhook: {e}")
+        return False
 
 def set_webhook(token, webhook_url):
-    """Set a new webhook."""
+    """Set a new webhook for the bot"""
+    if not webhook_url:
+        logger.info("No webhook URL provided, not setting a new webhook.")
+        return True
+        
     logger.info(f"Setting webhook to: {webhook_url}")
-    
     url = f"https://api.telegram.org/bot{token}/setWebhook"
     params = {
-        'url': webhook_url,
-        'drop_pending_updates': True,
-        'allowed_updates': ['message', 'callback_query']
+        "url": webhook_url,
+        "drop_pending_updates": True,
+        "max_connections": 100,
+        "allowed_updates": ["message", "edited_message", "callback_query"]
     }
     
-    response = requests.post(url, json=params)
-    
-    if response.status_code == 200:
+    try:
+        response = requests.post(url, json=params)
         data = response.json()
+        
         if data.get('ok'):
-            logger.info("Webhook successfully set")
+            logger.info("✅ Webhook set successfully!")
             return True
         else:
-            logger.error(f"Failed to set webhook: {data.get('description')}")
-    else:
-        logger.error(f"Error setting webhook: {response.status_code} - {response.text}")
-    
-    return False
+            logger.error(f"❌ Failed to set webhook: {data.get('description')}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Error setting webhook: {e}")
+        return False
 
-def check_webhook_info(token):
-    """Get information about the current webhook."""
-    logger.info("Checking webhook info...")
-    
+def get_webhook_info(token):
+    """Get current webhook info"""
+    logger.info("Getting webhook info...")
     url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
-    response = requests.get(url)
     
-    if response.status_code == 200:
+    try:
+        response = requests.get(url)
         data = response.json()
+        
         if data.get('ok'):
-            result = data.get('result', {})
-            logger.info(f"Current webhook URL: {result.get('url')}")
-            logger.info(f"Has custom certificate: {result.get('has_custom_certificate')}")
-            logger.info(f"Pending updates: {result.get('pending_update_count')}")
-            logger.info(f"Max connections: {result.get('max_connections')}")
-            
-            allowed_updates = result.get('allowed_updates', [])
-            logger.info(f"Allowed updates: {', '.join(allowed_updates) if allowed_updates else 'All'}")
-            
-            if result.get('last_error_date'):
-                error_date = datetime.fromtimestamp(result['last_error_date'])
-                logger.info(f"Last error: {error_date} - {result.get('last_error_message')}")
-            
-            if result.get('ip_address'):
-                logger.info(f"IP Address: {result.get('ip_address')}")
-            
-            return result
+            webhook_info = data.get('result', {})
+            logger.info("Current webhook information:")
+            logger.info(f"URL: {webhook_info.get('url', 'Not set')}")
+            logger.info(f"Pending updates: {webhook_info.get('pending_update_count', 0)}")
+            has_custom_cert = webhook_info.get('has_custom_certificate', False)
+            logger.info(f"Has custom certificate: {has_custom_cert}")
+            logger.info(f"Last error date: {webhook_info.get('last_error_date', 'None')}")
+            logger.info(f"Last error message: {webhook_info.get('last_error_message', 'None')}")
+            return webhook_info
         else:
-            logger.error(f"Failed to get webhook info: {data.get('description')}")
-    else:
-        logger.error(f"Error getting webhook info: {response.status_code} - {response.text}")
-    
-    return None
+            logger.error(f"❌ Failed to get webhook info: {data.get('description')}")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Error getting webhook info: {e}")
+        return None
 
-def get_bot_info(token):
-    """Get information about the bot."""
-    logger.info("Getting bot info...")
-    
-    url = f"https://api.telegram.org/bot{token}/getMe"
-    response = requests.get(url)
-    
-    if response.status_code == 200:
-        data = response.json()
-        if data.get('ok'):
-            result = data.get('result', {})
-            logger.info(f"Bot ID: {result.get('id')}")
-            logger.info(f"Bot username: @{result.get('username')}")
-            logger.info(f"Bot name: {result.get('first_name')}")
-            
-            return result
-        else:
-            logger.error(f"Failed to get bot info: {data.get('description')}")
-    else:
-        logger.error(f"Error getting bot info: {response.status_code} - {response.text}")
-    
-    return None
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Reset webhook for Telegram bot')
+    parser.add_argument('--token', required=True, help='Bot token')
+    parser.add_argument('--url', required=False, help='Webhook URL to set (optional)')
+    return parser.parse_args()
 
 def main():
-    """Reset the webhook."""
-    parser = argparse.ArgumentParser(description='Reset Telegram bot webhook')
-    parser.add_argument('--token', required=True, help='Telegram bot token')
-    parser.add_argument('--url', required=True, help='Webhook URL')
-    parser.add_argument('--check-only', action='store_true', help='Only check webhook status, don\'t modify')
-    parser.add_argument('--delete-only', action='store_true', help='Only delete webhook, don\'t set a new one')
+    """Main function"""
+    args = parse_args()
     
-    args = parser.parse_args()
+    # Ensure valid token
+    if not args.token or ":" not in args.token:
+        logger.error("Invalid token format. Must be in format 123456789:ABC...XYZ")
+        return 1
     
-    # Validate the URL
-    if not args.url.startswith('https://'):
-        logger.error("Webhook URL must start with https://")
-        sys.exit(1)
+    # Get current webhook info
+    current_info = get_webhook_info(args.token)
     
-    # Get bot info
-    bot_info = get_bot_info(args.token)
-    if not bot_info:
-        logger.error("Failed to get bot info. Please check your token.")
-        sys.exit(1)
+    # Delete webhook
+    if not delete_webhook(args.token):
+        logger.error("Failed to delete webhook. Check bot token.")
+        return 1
     
-    # Check current webhook
-    webhook_info = check_webhook_info(args.token)
+    # Set new webhook if URL provided
+    if args.url:
+        if not set_webhook(args.token, args.url):
+            logger.error("Failed to set webhook.")
+            return 1
     
-    # If check only, exit here
-    if args.check_only:
-        logger.info("Check only mode, exiting without changes")
-        return
+    # Get updated webhook info
+    updated_info = get_webhook_info(args.token)
     
-    # Delete current webhook
-    if delete_webhook(args.token):
-        if args.delete_only:
-            logger.info("Delete only mode, webhook deleted successfully")
-            return
-            
-        # Set new webhook
-        if set_webhook(args.token, args.url):
-            # Check again to verify
-            check_webhook_info(args.token)
-        else:
-            logger.error("Failed to set webhook")
-            sys.exit(1)
-    else:
-        logger.error("Failed to delete webhook")
-        sys.exit(1)
-    
-    logger.info("Webhook reset completed successfully")
+    return 0
 
 if __name__ == "__main__":
-    main() 
+    if len(sys.argv) == 1:
+        # Show usage example if no args
+        print("Usage examples:")
+        print("    python direct_reset_webhook.py --token YOUR_BOT_TOKEN --url YOUR_WEBHOOK_URL")
+        print("    python direct_reset_webhook.py --token YOUR_BOT_TOKEN")  # Delete only
+        print("\nThe correct token for @allkindsteam_bot is: 7910000886:AAHwuYKz8je_JSrpf53lXX8S6V5mfTqLd6Y")
+        sys.exit(1)
+        
+    sys.exit(main()) 
