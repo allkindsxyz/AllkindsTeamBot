@@ -6,8 +6,8 @@ dockerfilePath = "Dockerfile"
 
 [[services]]
 name = "allkinds-team-bot" # Ensure this matches your service name in Railway
-# Use a simple bash script to keep the server running indefinitely
-startCommand = "python3 -c \"import sys, asyncio; from src.bot.main import main; print('Starting bot service...'); asyncio.run(main()); print('Bot service completed, keeping container alive.'); import time; while True: time.sleep(3600)\""
+# Use a bash script to run the bot and then keep the container alive
+startCommand = "python3 -m src.bot.main && echo 'Bot service completed, keeping container alive' && while true; do sleep 3600; done"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10  # Increase max retries before giving up
 healthcheckPath = "/health" # Add healthcheck path to keep the service active
