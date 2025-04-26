@@ -3080,15 +3080,14 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
 
 
 def register_handlers(dp: Dispatcher) -> None:
-    """Register all start-related handlers."""
-    # Register the start command handler
+    """Register all handlers for the bot."""
+    # Basic commands
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_clear_profile, Command("clear_profile"))
     dp.message.register(cmd_cancel, Command("cancel"))
     
     # Question flow
     dp.message.register(on_show_questions, Command("show_questions"))
-    # dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.reviewing_question) # Removed undefined handler
     dp.callback_query.register(process_answer_callback, F.data.startswith("answer:"))
     dp.callback_query.register(on_skip_question, F.data.startswith("skip_question"))
     dp.callback_query.register(on_delete_question, F.data.startswith("delete_question"))
@@ -3108,6 +3107,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(handle_find_match_message, F.text == "Find Match")
     dp.message.register(handle_group_info_message, F.text == "Group Info")
     dp.message.register(handle_instructions_message, F.text == "Instructions")
+    dp.message.register(handle_add_question_message, F.text == "Add Question")
     
     # Register the callback handlers for inline keyboard buttons
     dp.callback_query.register(on_add_question_callback, F.data == "add_question")
@@ -3188,162 +3188,135 @@ def register_handlers(dp: Dispatcher) -> None:
 
 async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle the 'Start Anonymous Chat' button click."""
-    # Extract matched user ID from the callback data
-    match = re.match(r"start_anon_chat:(\d+)", callback_query.data)
-    if not match:
-        await callback_query.answer("Invalid match data", show_alert=True)
-        return
-
-    # Parse the matched user ID (this is the database ID, not Telegram ID)
-    matched_user_id = int(match.group(1))
-    logger.info(f"User {callback_query.from_user.id} starting anonymous chat with user {matched_user_id}")
-
-    # Get the current user from database
-    db_user = await user_repo.get_by_telegram_id(session, callback_query.from_user.id)
-    if not db_user:
-        await callback_query.answer("Your user profile couldn't be found", show_alert=True)
-        return
-
-    # Get the matched user from database
-    matched_db_user = await user_repo.get(session, matched_user_id)
-    if not matched_db_user:
-        await callback_query.answer("The matched user couldn't be found", show_alert=True)
-        return
-
-    # Get matched user's Telegram ID
-    matched_telegram_id = matched_db_user.telegram_id
-    if not matched_telegram_id:
-        logger.error(f"Matched user {matched_user_id} doesn't have a Telegram ID")
-        await callback_query.answer("Cannot start chat: matched user has no Telegram ID", show_alert=True)
-        return
-
-    logger.info(f"Found matched user with Telegram ID {matched_telegram_id}")
-
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    cohesion_score = data.get("cohesion_score", 0)
-    common_questions = data.get("common_questions", 0)
-
-    if not group_id:
-        await callback_query.answer("Group information is missing", show_alert=True)
-        return
-
-    # Check if a chat session already exists
-    existing_chat = await get_chat_by_participants(
-        session, db_user.id, matched_user_id, int(group_id)
-    )
-
-    # Create new chat session if none exists
-    if not existing_chat:
-        chat_session = Chat(
-            initiator_id=db_user.id,
-            recipient_id=matched_user_id,
-            group_id=int(group_id),
-            status="active",
-            created_at=datetime.now(),
-            updated_at=datetime.now()
-        )
-        session.add(chat_session)
-        await session.commit()
-        chat_id = chat_session.id
-        logger.info(f"Created new chat session {chat_id} between users {db_user.id} and {matched_user_id}")
-    else:
-        chat_id = existing_chat.id
-        logger.info(f"Using existing chat session {chat_id} between users {db_user.id} and {matched_user_id}")
-
-    # Generate a deep link to the communicator bot
-    communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
-    deep_link = f"https://t.me/{communicator_bot_username}?start=chat_{chat_id}"
-
-    # Send confirmation to the initiating user (User A)
-    confirmation_text = f"✅ Chat session created! Click the button below to start chatting anonymously."
-    confirmation_markup = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Open Chat", url=deep_link)]
-    ])
-    
     try:
-        # Check if the message is a photo message or text message
-        if callback_query.message.photo:
-            # For photo messages, edit the caption
-            await callback_query.message.edit_caption(
-                caption=confirmation_text,
-                reply_markup=confirmation_markup,
-                parse_mode="HTML"
-            )
-        else:
-            # For text messages, edit the text
-            await callback_query.message.edit_text(
-                text=confirmation_text,
-                reply_markup=confirmation_markup,
-                parse_mode="HTML"
-            )
-    except Exception as e:
-        logger.error(f"Error editing message: {e}")
-        # If editing fails, send a new message
-        await callback_query.message.answer(
-            text=confirmation_text,
-            reply_markup=confirmation_markup,
-            parse_mode="HTML"
-        )
-    
-    # Get nickname for user A (the initiator)
-    initiator_nickname = None
-    try:
-        initiator_group_member = await group_repo.get_group_member(session, db_user.id, int(group_id))
-        if initiator_group_member:
-            initiator_nickname = getattr(initiator_group_member, "nickname", None)
-    except Exception as e:
-        logger.warning(f"Error retrieving nickname for initiator: {e}")
+        # Extract matched user ID from the callback data
+        match = re.match(r"start_anon_chat:(\d+)", callback_query.data)
+        if not match:
+            await callback_query.answer("Invalid match data", show_alert=True)
+            return
 
-    # Format the cohesion score as a percentage
-    cohesion_percentage = int(cohesion_score * 100) if cohesion_score else 0
+        # Parse the matched user ID (this is the database ID, not Telegram ID)
+        matched_user_id = int(match.group(1))
+        logger.info(f"User {callback_query.from_user.id} starting anonymous chat with user {matched_user_id}")
 
-    # Create the notification message for the matched user (User B)
-    notification_text = (
-        f"🎉 <b>You have a new anonymous chat request!</b>\n\n"
-        f"Someone in your team wants to connect with you. "
-    )
+        # Get the current user from database
+        db_user = await user_repo.get_by_telegram_id(session, callback_query.from_user.id)
+        if not db_user:
+            logger.error(f"Current user with Telegram ID {callback_query.from_user.id} not found in database")
+            await callback_query.answer("Your user profile couldn't be found", show_alert=True)
+            return
 
-    # Add initiator's nickname if available
-    if initiator_nickname:
-        notification_text = notification_text.replace("Someone in your team", f"<b>{initiator_nickname}</b>")
+        # Get the matched user from database
+        matched_db_user = await user_repo.get(session, matched_user_id)
+        if not matched_db_user:
+            logger.error(f"Matched user {matched_user_id} not found in database")
+            await callback_query.answer("The matched user couldn't be found", show_alert=True)
+            return
 
-    # Add cohesion info if available
-    if cohesion_score and common_questions:
-        notification_text += (
-            f"\n\nYou share a <b>{cohesion_percentage}%</b> cohesion score "
-            f"based on <b>{common_questions}</b> common questions."
-        )
+        # Get matched user's Telegram ID
+        matched_telegram_id = matched_db_user.telegram_id
+        if not matched_telegram_id:
+            logger.error(f"Matched user {matched_user_id} doesn't have a Telegram ID")
+            await callback_query.answer("Cannot start chat: matched user has no Telegram ID", show_alert=True)
+            return
 
-    notification_text += "\n\nClick the button below to start chatting anonymously. Your identity will remain hidden until you choose to reveal it."
+        logger.info(f"Found matched user with Telegram ID {matched_telegram_id}")
 
-    # Try to send notification to the matched user (User B)
-    try:
-        # Send message to the matched user using their Telegram ID
-        await callback_query.bot.send_message(
-            chat_id=matched_telegram_id,  # Use Telegram ID, not database ID
-            text=notification_text,
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="Open Chat", url=deep_link)]
-            ]),
-            parse_mode="HTML"
-        )
-        logger.info(f"Sent notification to matched user with Telegram ID {matched_telegram_id}")
-    except Exception as e:
-        error_msg = f"Error sending notification to matched user {matched_telegram_id}: {e}"
-        logger.error(error_msg)
+        # Get data from state
+        data = await state.get_data()
+        logger.info(f"State data: {data}")
         
-        # Notify the initiator that there was an issue
-        try:
-            await callback_query.bot.send_message(
-                chat_id=callback_query.from_user.id,
-                text="⚠️ Your match has been created, but we couldn't notify the other person. They will see the chat when they next open the bot.",
-                parse_mode="HTML"
-            )
-        except Exception as notify_error:
-            logger.error(f"Error sending error notification to initiator: {notify_error}")
+        group_id = data.get("current_group_id")
+        
+        # If data from state is missing, try to extract it
+        if not group_id:
+            logger.warning("Group ID missing from state, checking message context")
+            
+            # Try to get the current group ID from the message if possible
+            if hasattr(callback_query, 'message') and callback_query.message:
+                # Look for group ID in the message text if possible
+                msg_text = callback_query.message.text or callback_query.message.caption or ""
+                group_match = re.search(r"group_id:(\d+)", msg_text)
+                if group_match:
+                    group_id = int(group_match.group(1))
+                    logger.info(f"Extracted group_id {group_id} from message text")
+            
+            if not group_id:
+                logger.error("Could not determine group ID")
+                await callback_query.answer("Group information is missing", show_alert=True)
+                return
 
-    await callback_query.answer("Chat started", show_alert=False)
+        logger.info(f"Using group_id: {group_id}")
+
+        # Check if a chat session already exists
+        existing_chat = await get_chat_by_participants(
+            session, db_user.id, matched_user_id, int(group_id)
+        )
+
+        # Create new chat session if none exists
+        if not existing_chat:
+            chat_session = Chat(
+                initiator_id=db_user.id,
+                recipient_id=matched_user_id,
+                group_id=int(group_id),
+                status="active",
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            session.add(chat_session)
+            await session.commit()
+            chat_id = chat_session.id
+            logger.info(f"Created new chat session {chat_id} between users {db_user.id} and {matched_user_id}")
+        else:
+            chat_id = existing_chat.id
+            logger.info(f"Using existing chat session {chat_id} between users {db_user.id} and {matched_user_id}")
+
+        # Generate a deep link to the communicator bot
+        communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
+        deep_link = f"https://t.me/{communicator_bot_username}?start=chat_{chat_id}"
+
+        # Send confirmation to the initiating user (User A)
+        confirmation_text = f"✅ Chat session created! Click the button below to start chatting anonymously."
+        confirmation_markup = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Open Chat", url=deep_link)]
+        ])
+        
+        try:
+            # Check if the message is a photo message or text message
+            if callback_query.message.photo:
+                # For photo messages, edit the caption
+                await callback_query.message.edit_caption(
+                    caption=confirmation_text,
+                    reply_markup=confirmation_markup,
+                    parse_mode="HTML"
+                )
+            else:
+                # For text messages, edit the text
+                await callback_query.message.edit_text(
+                    text=confirmation_text,
+                    reply_markup=confirmation_markup,
+                    parse_mode="HTML"
+                )
+            
+            logger.info(f"Successfully edited message to show chat link for user {db_user.id}")
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
+            # If editing fails, send a new message
+            try:
+                await callback_query.message.answer(
+                    text=confirmation_text,
+                    reply_markup=confirmation_markup,
+                    parse_mode="HTML"
+                )
+                logger.info(f"Sent new message with chat link for user {db_user.id}")
+            except Exception as e2:
+                logger.error(f"Failed to send new message: {e2}")
+                await callback_query.answer("Error starting chat. Please try again.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Unexpected error in on_start_anon_chat: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        await callback_query.answer("An error occurred. Please try again later.", show_alert=True)
 
 
 async def cmd_diagnostics(message: types.Message) -> None:
@@ -4366,11 +4339,31 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         matched_user_id, cohesion_score, common_questions, category_scores, category_counts = match_results[0]
         logger.info(f"Found match: user {matched_user_id} with cohesion score {cohesion_score:.2f}, {common_questions} common questions")
         
+        # Store match data in state for callbacks to use
+        update_data.update({
+            "matched_user_id": matched_user_id,
+            "cohesion_score": cohesion_score,
+            "common_questions": common_questions,
+            "category_scores": category_scores,
+            "category_counts": category_counts,
+            "current_group_id": int(group_id),  # Ensure group_id is always set
+            "current_group_name": group.name    # Ensure group_name is always set
+        })
+        
         # Get the matched user from the database
         matched_db_user = await user_repo.get(session, matched_user_id)
         if not matched_db_user:
+            logger.error(f"Could not find matched user with ID {matched_user_id} in database")
             await message.answer("❌ An error occurred while retrieving your match information.")
+            
+            # Refund points due to error
+            db_user.points += FIND_MATCH_COST
+            session.add(db_user)
+            await session.commit()
+            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
             return
+        
+        logger.info(f"Found matched user in database: ID={matched_db_user.id}, Telegram ID={matched_db_user.telegram_id}")
         
         # Format the cohesion score as a percentage
         cohesion_percentage = int(cohesion_score * 100)
@@ -4391,23 +4384,44 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                 confirmation_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
             confirmation_text += "\n"
         
+        # Add hidden group ID for context recovery if needed
+        confirmation_text += f"<span class='hidden'>group_id:{group_id}</span>"
+        
         # Try to get the nickname and photo for the matched user
         matched_user_nickname = None
         matched_user_photo = None
         
         try:
             # Get the group member record for the matched user
+            logger.info(f"Fetching group member data for matched user {matched_user_id} in group {group_id}")
+            
+            # Log database connection info
+            logger.info(f"Database session valid: {session is not None}")
+            
             matched_group_member = await group_repo.get_group_member(session, matched_user_id, int(group_id))
+            
             if matched_group_member:
+                logger.info(f"Found group member record for user {matched_user_id}: {matched_group_member}")
                 matched_user_nickname = getattr(matched_group_member, "nickname", None)
                 matched_user_photo = getattr(matched_group_member, "photo_file_id", None)
-                logger.info(f"Found nickname '{matched_user_nickname}' and photo '{matched_user_photo}' for matched user {matched_user_id}")
+                logger.info(f"Retrieved nickname: '{matched_user_nickname}' and photo ID: '{matched_user_photo}'")
+                
+                # Store nickname and photo in state
+                update_data["matched_user_nickname"] = matched_user_nickname
+                update_data["matched_user_photo"] = matched_user_photo
                 
                 # Add the nickname to the confirmation text if available
                 if matched_user_nickname:
+                    logger.info(f"Adding nickname '{matched_user_nickname}' to confirmation text")
                     confirmation_text = confirmation_text.replace("with a team member", f"with <b>{matched_user_nickname}</b>")
+                else:
+                    logger.warning(f"No nickname found for matched user {matched_user_id}")
+            else:
+                logger.warning(f"No group member record found for matched user {matched_user_id} in group {group_id}")
         except Exception as e:
-            logger.warning(f"Error retrieving nickname/photo for matched user: {e}")
+            logger.error(f"Error retrieving nickname/photo for matched user: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Continue without nickname/photo
         
         # Check if there is an existing match record
@@ -4431,6 +4445,8 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
             session.add(match_record)
             await session.commit()
             logger.info(f"Created new match record for users {db_user.id} and {matched_user_id} in group {group_id}")
+        else:
+            logger.info(f"Using existing match record between users {db_user.id} and {matched_user_id}")
         
         # Create keyboard with the Start Chat button
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -4448,9 +4464,13 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         confirmation_text += f"👉 <b>{FIND_MATCH_COST} points</b> have been deducted from your account for this match.\n\n"
         confirmation_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
         
+        # Log what we're about to put in state
+        logger.info(f"About to update state with: {update_data}")
+        
         # Send the message with the matched user's photo if available
         if matched_user_photo:
             try:
+                logger.info(f"Sending match confirmation with photo ID: {matched_user_photo}")
                 match_msg = await message.answer_photo(
                     photo=matched_user_photo,
                     caption=confirmation_text,
@@ -4459,7 +4479,9 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                 )
                 update_data["find_match_msg_id"] = match_msg.message_id
             except Exception as e:
-                logger.warning(f"Error sending matched user photo: {e}")
+                logger.error(f"Error sending matched user photo: {str(e)}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 # Fall back to text-only message
                 match_msg = await message.answer(
                     text=confirmation_text,
@@ -4469,6 +4491,7 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                 update_data["find_match_msg_id"] = match_msg.message_id
         else:
             # Send text-only message if no photo is available
+            logger.info("No photo available, sending text-only match confirmation")
             match_msg = await message.answer(
                 text=confirmation_text,
                 reply_markup=keyboard,
@@ -4476,37 +4499,38 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
             )
             update_data["find_match_msg_id"] = match_msg.message_id
         
-        # Update state to include the matched user ID
-        await state.update_data({
-            "matched_user_id": matched_user_id,
-            "cohesion_score": cohesion_score,
-            "common_questions": common_questions,
-            "category_scores": category_scores,
-            "category_counts": category_counts
-        })
-        
-        # Update state with cleanup data
+        # Update state data
         await state.update_data(**update_data)
         
-        # Set state to viewing_question to enable direct question entry
-        await state.set_state(QuestionFlow.viewing_question)
+        # Log that we've updated state
+        logger.info(f"Updated state data for user {db_user.id} with match information")
         
-        # Show group menu to maintain context
-        await show_group_menu(message, group_id, group.name, state, session=session)
-        
-        logger.info(f"Match confirmation sent to user {db_user.id} for match with user {matched_user_id}")
+        # Get the current state data to verify
+        verification_data = await state.get_data()
+        logger.info(f"Current state data: matched_user_id={verification_data.get('matched_user_id')}, "
+                   f"cohesion_score={verification_data.get('cohesion_score')}, "
+                   f"current_group_id={verification_data.get('current_group_id')}")
     except Exception as e:
-        logger.error(f"Error finding matches: {e}", exc_info=True)
-        await message.answer("An error occurred while finding matches. Please try again later.")
+        logger.error(f"Error in handle_find_match_message: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         
-        # If we failed after deducting points, refund them
+        # Refund points in case of error
         try:
             db_user.points += FIND_MATCH_COST
             session.add(db_user)
             await session.commit()
             logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
-        except Exception as refund_error:
-            logger.error(f"Failed to refund points to user {db_user.id}: {refund_error}")
+        except Exception as e2:
+            logger.error(f"Failed to refund points: {e2}")
+        
+        await message.answer("❌ An error occurred while finding a match. Please try again later.")
+        
+        # Show group menu to maintain context
+        try:
+            await show_group_menu(message, group_id, group.name, state, session=session)
+        except Exception as e3:
+            logger.error(f"Failed to show group menu: {e3}")
 
 
 async def handle_add_question_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
