@@ -3151,6 +3151,7 @@ def register_handlers(dp: Dispatcher) -> None:
     
     # Add Question
     dp.message.register(on_add_question, Command("add_question"))
+    dp.message.register(on_add_question, F.text == "Add Question")  # Add handler for text button
     dp.message.register(process_new_question_text, QuestionFlow.creating_question)
     dp.message.register(process_new_question_text, QuestionFlow.reviewing_question)
     dp.callback_query.register(on_confirm_add_question, F.data.startswith("confirm_add_question"))
@@ -3162,6 +3163,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(handle_find_match_message, F.text == "Find Match")
     dp.message.register(handle_group_info_message, F.text == "Group Info")
     dp.message.register(handle_instructions_message, F.text == "Instructions")
+    
+    # Register the callback handlers for inline keyboard buttons
+    dp.callback_query.register(on_add_question_callback, F.data == "add_question")
+    dp.callback_query.register(on_find_match_callback, F.data == "find_match")
+    dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
     
     # Answered Questions
     dp.callback_query.register(on_load_answered_questions, F.data.startswith("load_answered_questions"))
@@ -3219,7 +3225,10 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(debug_callback)
     
     # Catch-all for text messages (register last for text handlers)
-    dp.message.register(echo_debug_handler, F.text)
+    # Only enable in development mode
+    is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
+    if is_dev:
+        dp.message.register(echo_debug_handler, F.text)
 
 
 async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:

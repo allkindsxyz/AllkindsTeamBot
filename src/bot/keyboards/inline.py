@@ -76,9 +76,10 @@ def get_group_menu_reply_keyboard(current_section=None, balance=0) -> types.Repl
     # Use plain text matching handler filters
     matches_text = "Find Match"
 
-    # First row - only match button
+    # First row - match and add question buttons
     builder.row(
-        types.KeyboardButton(text=matches_text)
+        types.KeyboardButton(text=matches_text),
+        types.KeyboardButton(text="Add Question")
     )
     
     # Second row - group info and instructions
