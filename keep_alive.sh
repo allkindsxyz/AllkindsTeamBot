@@ -30,38 +30,14 @@ fi
 echo "Waiting 5 seconds before starting the bot..."
 sleep 5
 
-# Create a simple health check server
-cat > health_server.py << 'EOF'
-import http.server
-import socketserver
-import os
-
-PORT = int(os.environ.get("PORT", 8080))
-
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
-            self.send_response(200)
-            self.send_header("Content-type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"Bot is running")
-        else:
-            self.send_response(404)
-            self.send_header("Content-type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"Not found")
-
-print(f"Starting health check server on port {PORT}")
-with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
-    print(f"Health check server running at http://localhost:{PORT}")
-    httpd.serve_forever()
-EOF
-
-# Start the bot process in the background
-echo "Starting bot in polling mode with: python3 -m src.bot.main"
-nohup python3 -m src.bot.main > bot.log 2>&1 &
+# Start the bot process in the background with USE_WEBHOOK=0 to force polling mode
+echo "Starting bot in polling mode with: USE_WEBHOOK=0 python3 -m src.bot.main"
+USE_WEBHOOK=0 nohup python3 -m src.bot.main > bot.log 2>&1 &
 BOT_PID=$!
 echo "Bot started with PID: $BOT_PID"
+
+# Set up log monitor in the background
+(tail -f bot.log &)
 
 # Start the health check server
 echo "Starting health check server to keep the container active"
