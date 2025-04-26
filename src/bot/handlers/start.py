@@ -4246,69 +4246,78 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
 
 async def handle_find_match_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
     """Handle the 'Find Match' button from the reply keyboard."""
-    logger.info(f"User {message.from_user.id} pressed Find Match button")
-    
-    # Get current data
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    
-    if not group_id:
-        await message.answer("Please select a group first.")
-        return
-    
-    # Clean up previous messages
-    previous_instructions_msg_id = data.get("instructions_msg_id")
-    previous_group_info_msg_id = data.get("group_info_msg_id")
-    previous_find_match_msg_id = data.get("find_match_msg_id")
-    
-    for msg_id in [previous_instructions_msg_id, previous_group_info_msg_id, previous_find_match_msg_id]:
-        if msg_id:
-            try:
-                await message.bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete previous message: {e}")
-    
-    # Clear stored message IDs
-    update_data = {
-        "instructions_msg_id": None,
-        "group_info_msg_id": None,
-        "find_match_msg_id": None
-    }
-    
-    # Retrieve the user from the database
-    db_user = await user_repo.get_by_telegram_id(session, message.from_user.id)
-    if not db_user:
-        await message.answer("❌ Your user profile couldn't be found. Please restart by clicking /start.")
-        return
-    
-    # Check if user has enough points (1 point required)
-    if db_user.points < FIND_MATCH_COST:
-        logger.info(f"User {db_user.id} tried to find match but has insufficient points ({db_user.points})")
-        await message.answer(
-            f"❌ You need at least {FIND_MATCH_COST} points to find a match. You currently have {db_user.points} points.\n\n"
-            "To earn more points, answer more questions in your group!"
-        )
-        return
-    
-    # Check if user has answered enough questions
-    answer_count = await get_answer_count(session, db_user.id, int(group_id))
-    if answer_count < MIN_QUESTIONS_FOR_MATCH:
-        logger.info(f"User {db_user.id} tried to find match but has only answered {answer_count} questions")
-        await message.answer(
-            f"❌ You need to answer at least {MIN_QUESTIONS_FOR_MATCH} questions to find a match.\n"
-            f"You've currently answered {answer_count} questions."
-        )
-        return
-    
-    # Get the group from the database
-    group = await group_repo.get(session, int(group_id))
-    if not group:
-        await message.answer("❌ Group not found. Please restart by clicking on the group link.")
-        return
-    
     try:
-        # Find matches for the user in this group
-        logger.info(f"Finding matches for user {db_user.id} in group {group_id}")
+        logger.info(f"User {message.from_user.id} pressed Find Match button")
+        
+        # Get current data
+        data = await state.get_data()
+        group_id = data.get("current_group_id")
+        
+        if not group_id:
+            logger.warning(f"User {message.from_user.id} has no current_group_id in state")
+            await message.answer("Please select a group first.")
+            return
+        
+        logger.info(f"Finding matches for user {message.from_user.id} in group {group_id}")
+        
+        # Clean up previous messages
+        previous_instructions_msg_id = data.get("instructions_msg_id")
+        previous_group_info_msg_id = data.get("group_info_msg_id")
+        previous_find_match_msg_id = data.get("find_match_msg_id")
+        
+        for msg_id in [previous_instructions_msg_id, previous_group_info_msg_id, previous_find_match_msg_id]:
+            if msg_id:
+                try:
+                    await message.bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
+                except Exception as e:
+                    logger.warning(f"Failed to delete previous message: {e}")
+        
+        # Clear stored message IDs
+        update_data = {
+            "instructions_msg_id": None,
+            "group_info_msg_id": None,
+            "find_match_msg_id": None
+        }
+        
+        # Retrieve the user from the database
+        db_user = await user_repo.get_by_telegram_id(session, message.from_user.id)
+        if not db_user:
+            logger.error(f"User {message.from_user.id} not found in database")
+            await message.answer("❌ Your user profile couldn't be found. Please restart by clicking /start.")
+            return
+        
+        # Check if user has enough points (1 point required)
+        if db_user.points < FIND_MATCH_COST:
+            logger.info(f"User {db_user.id} tried to find match but has insufficient points ({db_user.points})")
+            await message.answer(
+                f"❌ You need at least {FIND_MATCH_COST} points to find a match. You currently have {db_user.points} points.\n\n"
+                "To earn more points, answer more questions in your group!"
+            )
+            return
+        
+        # Check if user has answered enough questions
+        answer_count = await get_answer_count(session, db_user.id, int(group_id))
+        logger.info(f"User {db_user.id} has answered {answer_count} questions in group {group_id}")
+        
+        if answer_count < MIN_QUESTIONS_FOR_MATCH:
+            logger.info(f"User {db_user.id} tried to find match but has only answered {answer_count} questions (min required: {MIN_QUESTIONS_FOR_MATCH})")
+            await message.answer(
+                f"❌ You need to answer at least {MIN_QUESTIONS_FOR_MATCH} questions to find a match.\n"
+                f"You've currently answered {answer_count} questions."
+            )
+            return
+        
+        # Get the group from the database
+        group = await group_repo.get(session, int(group_id))
+        if not group:
+            logger.error(f"Group {group_id} not found in database")
+            await message.answer("❌ Group not found. Please restart by clicking on the group link.")
+            return
+        
+        # Get count of other users in the group for logging
+        group_members = await group_repo.get_group_members(session, int(group_id))
+        other_members_count = len([m for m in group_members if m.user_id != db_user.id])
+        logger.info(f"Group {group_id} has {other_members_count} other members besides user {db_user.id}")
         
         # Deduct points from the initiating user
         db_user.points -= FIND_MATCH_COST
@@ -4317,13 +4326,13 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         logger.info(f"Deducted {FIND_MATCH_COST} points from user {db_user.id}, new balance: {db_user.points}")
         
         # Find matches
+        logger.info(f"Calling find_matches for user {db_user.id} in group {group_id}")
         match_results = await find_matches(session, db_user.id, int(group_id))
+        logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
         
         if not match_results or len(match_results) == 0:
             # No matches found
-            await message.answer(
-                "😔 No matches found at this time. Please try again later when more group members have answered questions."
-            )
+            logger.info(f"No matches found for user {db_user.id} in group {group_id}")
             
             # Refund points since no matches were found
             db_user.points += FIND_MATCH_COST
@@ -4331,8 +4340,18 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
             await session.commit()
             logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to no matches, new balance: {db_user.points}")
             
-            # Show group menu to maintain context
-            await show_group_menu(message, group_id, group.name, state, session=session)
+            try:
+                # Send no matches message
+                await message.answer(
+                    "😔 No matches found at this time. Please try again later when more group members have answered questions."
+                )
+                
+                # Show group menu to maintain context
+                await show_group_menu(message, group_id, group.name, state, session=session)
+            except Exception as menu_error:
+                logger.error(f"Error showing group menu after no matches: {menu_error}")
+                await message.answer("Please use /start to return to the main menu.")
+            
             return
         
         # Get the top match
@@ -4354,13 +4373,15 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         matched_db_user = await user_repo.get(session, matched_user_id)
         if not matched_db_user:
             logger.error(f"Could not find matched user with ID {matched_user_id} in database")
-            await message.answer("❌ An error occurred while retrieving your match information.")
             
             # Refund points due to error
             db_user.points += FIND_MATCH_COST
             session.add(db_user)
             await session.commit()
             logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+            
+            await message.answer("❌ An error occurred while retrieving your match information.")
+            await show_group_menu(message, group_id, group.name, state, session=session)
             return
         
         logger.info(f"Found matched user in database: ID={matched_db_user.id}, Telegram ID={matched_db_user.telegram_id}")
@@ -4468,6 +4489,7 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         logger.info(f"About to update state with: {update_data}")
         
         # Send the message with the matched user's photo if available
+        sent_message = None
         if matched_user_photo:
             try:
                 logger.info(f"Sending match confirmation with photo ID: {matched_user_photo}")
@@ -4478,26 +4500,49 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                     parse_mode="HTML"
                 )
                 update_data["find_match_msg_id"] = match_msg.message_id
+                sent_message = match_msg
             except Exception as e:
                 logger.error(f"Error sending matched user photo: {str(e)}")
                 import traceback
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 # Fall back to text-only message
+                try:
+                    match_msg = await message.answer(
+                        text=confirmation_text,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                    update_data["find_match_msg_id"] = match_msg.message_id
+                    sent_message = match_msg
+                except Exception as e2:
+                    logger.error(f"Error sending text fallback: {str(e2)}")
+                    raise
+        else:
+            # Send text-only message if no photo is available
+            logger.info("No photo available, sending text-only match confirmation")
+            try:
                 match_msg = await message.answer(
                     text=confirmation_text,
                     reply_markup=keyboard,
                     parse_mode="HTML"
                 )
                 update_data["find_match_msg_id"] = match_msg.message_id
-        else:
-            # Send text-only message if no photo is available
-            logger.info("No photo available, sending text-only match confirmation")
-            match_msg = await message.answer(
-                text=confirmation_text,
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
-            update_data["find_match_msg_id"] = match_msg.message_id
+                sent_message = match_msg
+            except Exception as e:
+                logger.error(f"Error sending text message: {str(e)}")
+                raise
+        
+        if not sent_message:
+            logger.error("Failed to send match confirmation message")
+            
+            # Refund points due to error
+            db_user.points += FIND_MATCH_COST
+            session.add(db_user)
+            await session.commit()
+            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+            
+            await message.answer("❌ An error occurred while sending match information.")
+            return
         
         # Update state data
         await state.update_data(**update_data)
@@ -4515,22 +4560,36 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         
-        # Refund points in case of error
+        # Safely attempt to refund points
         try:
-            db_user.points += FIND_MATCH_COST
-            session.add(db_user)
-            await session.commit()
-            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+            # Only refund if we have valid db_user
+            if 'db_user' in locals() and db_user:
+                db_user.points += FIND_MATCH_COST
+                session.add(db_user)
+                await session.commit()
+                logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
         except Exception as e2:
             logger.error(f"Failed to refund points: {e2}")
         
-        await message.answer("❌ An error occurred while finding a match. Please try again later.")
+        # Send a single error message rather than potentially sending two
+        if not 'no_matches_sent' in locals() or not locals()['no_matches_sent']:
+            try:
+                await message.answer("❌ An error occurred while finding a match. Please try again later.")
+            except Exception as e3:
+                logger.error(f"Failed to send error message: {e3}")
         
-        # Show group menu to maintain context
+        # Safely attempt to show group menu
         try:
-            await show_group_menu(message, group_id, group.name, state, session=session)
+            # Only try to show menu if we have valid group data
+            if 'group' in locals() and group and 'group_id' in locals() and group_id:
+                await show_group_menu(message, group_id, group.name, state, session=session)
         except Exception as e3:
             logger.error(f"Failed to show group menu: {e3}")
+            # Try a simple fallback
+            try:
+                await message.answer("Use /start to return to the main menu.")
+            except:
+                pass
 
 
 async def handle_add_question_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:

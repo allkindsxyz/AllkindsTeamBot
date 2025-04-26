@@ -9,17 +9,29 @@ import logging
 import asyncio
 import time
 import traceback
-from datetime import datetime
+import signal
+import atexit
+import socket
+from datetime import datetime, UTC
+from pathlib import Path
+from contextlib import asynccontextmanager
+import ssl
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, BotCommand
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
 from src.core.config import get_settings
 from src.bot.handlers import register_handlers
 from src.bot.middlewares import DbSessionMiddleware
 from src.bot.middlewares.logging_middleware import StateLoggingMiddleware
 from src.db.base import async_session_factory
+from src.db import get_async_engine, init_models, get_session
+from src.core.diagnostics import get_diagnostics_report, IS_RAILWAY
 
 # Configure logging
 logging.basicConfig(
@@ -40,252 +52,275 @@ if not BOT_TOKEN:
 # Detect environment
 IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
 
-# Health check endpoint
-async def health_check(request):
-    """Health check endpoint that always returns OK"""
-    logger.info(f"Health check requested from {request.remote}")
-    return web.Response(
-        text=json.dumps({"status": "ok", "timestamp": datetime.now().isoformat()}),
-        content_type="application/json",
-        status=200
-    )
+# Lock file path
+LOCK_FILE = "bot.lock"
 
-# Status page
-async def status_page(request):
-    """Status page showing the bot is running"""
-    return web.Response(
-        text=f"<html><body><h1>Bot is running</h1><p>Time: {datetime.now().isoformat()}</p></body></html>",
-        content_type="text/html",
-        status=200
-    )
-
-# Main function
-async def main():
-    """Run the bot with full functionality"""
+def check_lock_file():
+    """Check if the lock file exists and if the process is still running."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, "r") as f:
+                data = json.load(f)
+            
+            # Check if the process ID exists
+            pid = data.get("pid")
+            if pid:
+                try:
+                    # Try to send signal 0 to the process (doesn't kill it, just checks if exists)
+                    os.kill(pid, 0)
+                    hostname = data.get("hostname", "unknown")
+                    started_at = data.get("started_at", "unknown time")
+                    
+                    # Process exists, bot is already running
+                    logger.error(f"Bot is already running with PID {pid} on {hostname} since {started_at}")
+                    logger.error("To force start, delete the lock file: bot.lock")
+                    return False
+                except OSError:
+                    # Process doesn't exist, we can remove the lock file
+                    logger.warning(f"Found stale lock file for non-existent process {pid}. Removing it.")
+                    os.remove(LOCK_FILE)
+        except Exception as e:
+            # Error reading or parsing the lock file
+            logger.warning(f"Error checking lock file: {e}")
+            logger.warning("Removing potentially corrupted lock file")
+            try:
+                os.remove(LOCK_FILE)
+            except:
+                pass
+    
+    # Create lock file
     try:
-        logger.info("Starting main bot...")
-        
-        # Log environment for debugging
-        logger.info(f"Python version: {sys.version}")
-        logger.info(f"Bot token: {BOT_TOKEN[:4]}...{BOT_TOKEN[-4:]}")
-        logger.info(f"PORT: {os.environ.get('PORT', '8080')}")
-        
-        # Create bot instance
-        bot = Bot(token=BOT_TOKEN)
-        
-        # Create dispatcher
-        storage = MemoryStorage()
-        dp = Dispatcher(storage=storage)
-        logger.info("Dispatcher initialized with MemoryStorage")
-        
-        # Register middleware
-        dp.update.outer_middleware(StateLoggingMiddleware())
-        logger.info("State logging middleware registered")
-        
-        dp.update.outer_middleware(DbSessionMiddleware(session_pool=async_session_factory))
-        logger.info("Database session middleware registered")
-        
-        # Register all handlers with exception handling
-        try:
-            register_handlers(dp)
-            logger.info("All handlers registered successfully")
-        except Exception as e:
-            logger.error(f"Error registering handlers: {e}")
-            logger.error(traceback.format_exc())
-            # Continue anyway - we'll handle missing handlers during runtime
-            logger.info("Continuing despite handler registration error")
-        
-        # Remove command menu as requested by user
-        try:
-            # Delete any existing commands menu
-            await bot.delete_my_commands()
-            logger.info("Bot commands menu removed as requested")
-        except Exception as e:
-            logger.error(f"Failed to remove bot commands: {e}")
-        
-        # Create web application
-        app = web.Application()
-        
-        # Register routes
-        webhook_path = f"/webhook/{BOT_TOKEN}"
-        
-        # Improved webhook handler
-        async def handle_webhook(request):
-            try:
-                logger.info(f"Received webhook request from {request.remote}")
-                
-                # Parse the update from the request
-                update_data = await request.json()
-                
-                # Log detailed update info for debugging button issues
-                if "callback_query" in update_data:
-                    callback_data = update_data.get("callback_query", {}).get("data")
-                    logger.info(f"Received callback_query with data: {callback_data}")
-                
-                logger.debug(f"Update data: {json.dumps(update_data)[:200]}...")
-                
-                # Convert dict to Update object
-                update = types.Update(**update_data)
-                
-                # Process the update
-                try:
-                    await dp.feed_update(bot, update)
-                    logger.info(f"Successfully processed update ID: {update.update_id}")
-                except Exception as update_error:
-                    logger.error(f"Error processing update: {update_error}")
-                    logger.error(traceback.format_exc())
-                
-                # Always return 200 to prevent Telegram from retrying
-                return web.Response(status=200)
-            except Exception as request_error:
-                logger.error(f"Error handling webhook request: {request_error}")
-                logger.error(traceback.format_exc())
-                return web.Response(status=200)
-        
-        # Register routes
-        app.router.add_post(webhook_path, handle_webhook)
-        app.router.add_get("/health", health_check)
-        app.router.add_get("/", status_page)
-        
-        # Set up webhook in production
-        webhook_domain = os.environ.get("WEBHOOK_DOMAIN")
-        if IS_PRODUCTION:
-            # Use polling mode in production too instead of webhooks
-            logger.info("Using polling mode in production for better stability")
-            
-            # Delete any existing webhook
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook deleted for polling mode")
-            
-            # Start web server for health checks
-            port = int(os.environ.get("PORT", 8080))
-            try:
-                runner = web.AppRunner(app)
-                await runner.setup()
-                site = web.TCPSite(runner, "0.0.0.0", port)
-                await site.start()
-                logger.info(f"Web server started on port {port}")
-            except OSError as e:
-                # If port is already in use, log it but continue with polling
-                if e.errno == 98:  # Address already in use
-                    logger.warning(f"Port {port} already in use, cannot start web server. Continuing with polling only.")
-                else:
-                    raise
-            
-            # Start polling in production mode
-            logger.info("Starting polling in production mode")
-            try:
-                await dp.start_polling(bot, allowed_updates=["message", "callback_query", "my_chat_member", "edited_message", "chat_member"])
-                logger.info("Polling started successfully in production mode")
-            except Exception as e:
-                logger.error(f"Error starting polling: {e}")
-                logger.error(traceback.format_exc())
-                raise
-            
-            # Keep alive in production too
-            logger.info("Bot is running indefinitely in production with polling...")
-            
-            while True:
-                try:
-                    current_time = datetime.now().isoformat()
-                    logger.info(f"Production bot status check at {current_time}")
-                    
-                    # Test bot connection
-                    me = await bot.get_me()
-                    logger.info(f"Bot is connected as @{me.username} (ID: {me.id})")
-                    
-                except Exception as check_error:
-                    logger.error(f"Error during bot status check: {check_error}")
-                    logger.error(traceback.format_exc())
-                
-                # Wait for 5 minutes
-                await asyncio.sleep(300)
-        else:
-            # Delete webhook for development
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook deleted for development mode")
-            
-            # Start polling instead of webhook in development
-            logger.info("Starting polling in development mode")
-            try:
-                await dp.start_polling(bot, allowed_updates=["message", "callback_query", "my_chat_member", "edited_message", "chat_member"])
-            except Exception as e:
-                logger.error(f"Error starting polling: {e}")
-            
-            # Start web server for webhook mode
-            port = int(os.environ.get("PORT", 8080))
-            runner = web.AppRunner(app)
-            await runner.setup()
-            site = web.TCPSite(runner, "0.0.0.0", port)
-            
-            await site.start()
-            logger.info(f"Web server started on port {port}")
-            
-            # Keep the service running
-            logger.info("Bot is running indefinitely...")
-            
-            # Keep alive - log periodic status and check webhook
-            retry_count = 0
-            while True:
-                try:
-                    current_time = datetime.now().isoformat()
-                    logger.info(f"Bot status check at {current_time}")
-                    
-                    me = await bot.get_me()
-                    logger.info(f"Bot is connected as @{me.username} (ID: {me.id})")
-                    
-                    # Check webhook status in production
-                    if IS_PRODUCTION:
-                        try:
-                            webhook_info = await bot.get_webhook_info()
-                            logger.info(f"Webhook status: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
-                            
-                            # If webhook is not set correctly, try to set it again
-                            if webhook_domain and (not webhook_info.url or webhook_info.url != f"https://{webhook_domain}{webhook_path}"):
-                                logger.warning("Webhook not set correctly, resetting...")
-                                webhook_url = f"https://{webhook_domain}{webhook_path}"
-                                await bot.delete_webhook()
-                                await bot.set_webhook(webhook_url)
-                                logger.info(f"Webhook reset to: {webhook_url}")
-                            
-                            # Reset retry count on success
-                            retry_count = 0
-                        except Exception as webhook_error:
-                            logger.error(f"Error checking webhook: {webhook_error}")
-                            retry_count += 1
-                            
-                            # If we've failed multiple times, try to reset the webhook
-                            if retry_count >= 3:
-                                logger.warning(f"Multiple webhook check failures ({retry_count}), attempting reset")
-                                try:
-                                    await bot.delete_webhook(drop_pending_updates=True)
-                                    if webhook_domain:
-                                        webhook_url = f"https://{webhook_domain}{webhook_path}"
-                                        await bot.set_webhook(webhook_url)
-                                        logger.info(f"Webhook reset to: {webhook_url}")
-                                    else:
-                                        railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-                                        if railway_domain:
-                                            webhook_url = f"https://{railway_domain}{webhook_path}"
-                                            await bot.set_webhook(webhook_url)
-                                            logger.info(f"Webhook reset using RAILWAY_PUBLIC_DOMAIN: {webhook_url}")
-                                except Exception as reset_error:
-                                    logger.error(f"Failed to reset webhook: {reset_error}")
-                except Exception as check_error:
-                    logger.error(f"Error during bot status check: {check_error}")
-                    logger.error(traceback.format_exc())
-                
-                # Wait for 5 minutes
-                await asyncio.sleep(300)
+        with open(LOCK_FILE, "w") as f:
+            data = {
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+                "started_at": datetime.now(UTC).isoformat()
+            }
+            json.dump(data, f)
+        logger.info(f"Created lock file for PID {os.getpid()}")
     except Exception as e:
-        logger.error(f"Fatal error in main function: {e}")
-        logger.error(traceback.format_exc())
-        raise
+        logger.error(f"Failed to create lock file: {e}")
+    
+    # Register cleanup on exit
+    atexit.register(remove_lock_file)
+    
+    return True
+
+def remove_lock_file():
+    """Remove the lock file on exit."""
+    try:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+            logger.info("Removed lock file")
+    except Exception as e:
+        logger.error(f"Failed to remove lock file: {e}")
+
+async def on_shutdown(dispatcher: Dispatcher, bot: Bot):
+    """Handle shutdown processes."""
+    logger.info("Shutting down the bot")
+    await dispatcher.fsm.storage.close()
+    await bot.session.close()
+    logger.info("Bot shutdown complete")
+
+async def run_webhook_bot():
+    """Run the bot in webhook mode."""
+    logger.info("Starting bot in webhook mode")
+    
+    webhook_host = settings.WEBHOOK_HOST
+    webhook_path = settings.WEBHOOK_PATH
+    webapp_host = settings.WEBAPP_HOST
+    webapp_port = settings.WEBAPP_PORT
+    
+    # Set up SSL if using HTTPS
+    ssl_context = None
+    if settings.WEBHOOK_HOST.startswith("https"):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+        ssl_context.load_cert_chain(settings.WEBHOOK_SSL_CERT, settings.WEBHOOK_SSL_PRIV)
+    
+    # Initialize the bot with an AiohttpSession for better control
+    bot_session = AiohttpSession()
+    bot = Bot(token=settings.BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
+    
+    # Configure storage - Redis if available, otherwise Memory
+    if settings.REDIS_URL:
+        storage = RedisStorage.from_url(settings.REDIS_URL)
+        logger.info("Using Redis storage for FSM")
+    else:
+        storage = MemoryStorage()
+        logger.info("Using in-memory storage for FSM")
+    
+    # Initialize dispatcher
+    dp = Dispatcher(storage=storage)
+    
+    # Register all the middleware
+    register_middlewares(dp)
+    
+    # Register all the handlers
+    register_handlers(dp)
+    
+    # Set up webhook
+    webhook_url = f"{webhook_host}{webhook_path}"
+    await bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to {webhook_url}")
+    
+    # Start aiohttp application for webhook
+    app = web.Application()
+    
+    # Simple handler for health checks
+    async def health_handler(request):
+        return web.Response(text="Bot is running")
+    
+    # Webhook handler
+    async def webhook_handler(request):
+        try:
+            # Get the request data
+            data = await request.json()
+            # Create a telegram Update object
+            update = types.Update.model_validate(data, context={"bot": bot})
+            # Process the update using the dispatcher
+            await dp.feed_update(bot, update)
+            return web.Response()
+        except Exception as e:
+            logger.error(f"Error in webhook handler: {e}")
+            traceback.print_exc()
+            return web.Response(status=500)
+    
+    # Add the routes
+    app.router.add_get("/health", health_handler)
+    app.router.add_post(webhook_path, webhook_handler)
+    
+    # Set up shutdown routine
+    async def shutdown_app(app):
+        await on_shutdown(dp, bot)
+    
+    app.on_shutdown.append(shutdown_app)
+    
+    # Start the web server
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, webapp_host, webapp_port, ssl_context=ssl_context)
+    
+    logger.info(f"Starting webhook listener on {webapp_host}:{webapp_port}")
+    await site.start()
+    
+    # Keep the process alive
+    try:
+        while True:
+            await asyncio.sleep(3600)  # Sleep for an hour, let things run
+    except asyncio.CancelledError:
+        logger.info("Bot received cancellation signal")
+    finally:
+        logger.info("Shutting down webhook listener")
+        await runner.cleanup()
+
+async def run_polling_bot():
+    """Run the bot in polling mode."""
+    logger.info("Starting bot in polling mode")
+    
+    # Initialize the bot with an AiohttpSession for better control
+    bot_session = AiohttpSession()
+    bot = Bot(token=settings.BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
+    
+    # Configure storage
+    if settings.REDIS_URL:
+        storage = RedisStorage.from_url(settings.REDIS_URL)
+        logger.info("Using Redis storage for FSM")
+    else:
+        storage = MemoryStorage()
+        logger.info("Using in-memory storage for FSM")
+    
+    # Initialize dispatcher
+    dp = Dispatcher(storage=storage)
+    
+    # Register all the middleware
+    register_middlewares(dp)
+    
+    # Register all the handlers
+    register_handlers(dp)
+    
+    # Make sure webhook is removed
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Webhook removed, using polling mode")
+    
+    # Log diagnostic info
+    diagnostics = get_diagnostics_report()
+    logger.info(f"System diagnostics: {diagnostics}")
+    
+    # Set up signal handlers
+    def signal_handler(*args):
+        logger.info("Received termination signal")
+        raise asyncio.CancelledError()
+    
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, signal_handler)
+        except (AttributeError, RuntimeError):
+            # Windows doesn't support SIGTERM
+            pass
+    
+    # Start polling
+    try:
+        logger.info("Bot started polling for updates. Press Ctrl+C to stop")
+        await dp.start_polling(bot, skip_updates=True)
+    except asyncio.CancelledError:
+        logger.info("Bot polling cancelled")
+    finally:
+        await on_shutdown(dp, bot)
+
+@asynccontextmanager
+async def lifespan(app: web.Application):
+    """
+    Lifespan context manager for the web application.
+    Handles database startup and shutdown cleanly.
+    """
+    # Database setup
+    engine = get_async_engine(settings.DATABASE_URL)
+    await init_models(engine)
+    
+    # Start the bot here (use await asyncio.create_task if needed)
+    # Yield to let the application run
+    yield
+    
+    # Cleanup on shutdown
+    logger.info("Application shutting down, cleaning up resources")
+
+async def main():
+    """Main entry point for the bot."""
+    logger.info("==================================================")
+    logger.info(f"Starting AllkindsTeamBot at {datetime.now(UTC).isoformat()}")
+    logger.info(f"Running in {'Railway' if IS_RAILWAY else 'Local'} environment")
+    
+    # Check if another instance is running
+    if not check_lock_file():
+        logger.error("Bot is already running, exiting")
+        return
+    
+    try:
+        # Check for database migrations
+        if not os.environ.get("SKIP_DB_INIT"):
+            engine = get_async_engine(settings.DATABASE_URL)
+            await init_models(engine)
+            logger.info("Database initialized")
+        
+        # Decide between webhook and polling modes
+        if settings.USE_WEBHOOK:
+            await run_webhook_bot()
+        else:
+            await run_polling_bot()
+    except Exception as e:
+        logger.error(f"Critical error in main function: {e}")
+        traceback.print_exc()
+    finally:
+        remove_lock_file()
+        logger.info(f"Bot stopped at {datetime.now(UTC).isoformat()}")
+        logger.info("==================================================")
 
 if __name__ == "__main__":
+    # Start the bot
     try:
-        logger.info("Initializing main bot...")
         asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user (KeyboardInterrupt)")
     except Exception as e:
-        logger.exception("Main bot exited due to an error:")
-        sys.exit(1)
+        logger.error(f"Fatal error: {e}")
+        traceback.print_exc()
