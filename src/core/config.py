@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Database settings
     db_url: str = Field(default="sqlite+aiosqlite:///./allkinds.db", alias='DATABASE_URL') # Use alias for Railway compatibility
     
+    # Redis settings
+    REDIS_URL: str = Field(default="", alias='REDIS_URL')
+    
     # OpenAI settings
     openai_api_key: str = Field(default="", alias='OPENAI_API_KEY')
     
