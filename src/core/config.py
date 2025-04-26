@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     # ADMIN_IDS should hold the final list of ints
     ADMIN_IDS: List[int] = [123456789]  # Default prevents validation error
     COMMUNICATOR_BOT_USERNAME: str = Field(default="", alias='COMMUNICATOR_BOT_USERNAME')
+    
+    # Webhook configuration
+    USE_WEBHOOK: bool = Field(default=False, alias='USE_WEBHOOK')  # Default to polling mode
+    WEBHOOK_HOST: str = Field(default="https://allkindsbot.up.railway.app", alias='WEBHOOK_HOST')
+    WEBHOOK_PATH: str = Field(default="/webhook", alias='WEBHOOK_PATH')
+    WEBHOOK_SSL_CERT: str = Field(default="webhook_cert.pem", alias='WEBHOOK_SSL_CERT')
+    WEBHOOK_SSL_PRIV: str = Field(default="webhook_pkey.pem", alias='WEBHOOK_SSL_PRIV')
+    WEBAPP_HOST: str = Field(default="0.0.0.0", alias='WEBAPP_HOST')  # Default for Railway
+    WEBAPP_PORT: int = Field(default=8080, alias='WEBAPP_PORT')  # Default for Railway
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod
