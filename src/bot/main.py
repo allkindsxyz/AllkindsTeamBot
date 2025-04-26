@@ -95,16 +95,13 @@ async def main():
             # Continue anyway - we'll handle missing handlers during runtime
             logger.info("Continuing despite handler registration error")
         
-        # Set up commands
+        # Remove command menu as requested by user
         try:
-            await bot.set_my_commands([
-                BotCommand(command="/start", description="Start the bot"),
-                BotCommand(command="/help", description="Show help"),
-                BotCommand(command="/cancel", description="Cancel operation")
-            ])
-            logger.info("Bot commands set")
+            # Delete any existing commands menu
+            await bot.delete_my_commands()
+            logger.info("Bot commands menu removed as requested")
         except Exception as e:
-            logger.error(f"Failed to set bot commands: {e}")
+            logger.error(f"Failed to remove bot commands: {e}")
         
         # Create web application
         app = web.Application()
@@ -119,6 +116,12 @@ async def main():
                 
                 # Parse the update from the request
                 update_data = await request.json()
+                
+                # Log detailed update info for debugging button issues
+                if "callback_query" in update_data:
+                    callback_data = update_data.get("callback_query", {}).get("data")
+                    logger.info(f"Received callback_query with data: {callback_data}")
+                
                 logger.debug(f"Update data: {json.dumps(update_data)[:200]}...")
                 
                 # Convert dict to Update object

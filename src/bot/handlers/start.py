@@ -724,19 +724,26 @@ async def handle_group_invite(message: types.Message, group_id: int, state: FSMC
 
 
 async def show_welcome_menu(message: types.Message) -> None:
-    """Show welcome message with create/join options."""
-    user = message.from_user
+    """Show the welcome menu for the bot."""
+    # Improved logging for debugging
+    logger.info(f"Showing welcome menu to user {message.from_user.id}")
+    
+    keyboard = get_start_menu_keyboard()
+    
+    # Log keyboard structure to confirm it's generated correctly
+    logger.info(f"Generated keyboard structure: {keyboard}")
     
     welcome_text = (
-        f"👋 Welcome to Allkinds, {user.first_name}!\n\n"
-        "Connect with people who share your values through yes/no questions and answers.\n\n"
+        "👋 Welcome to <b>AllKinds</b>!\n\n"
+        "This bot helps you connect with people who share your values.\n\n"
         "What would you like to do?"
     )
     
-    # Get the keyboard with "Create a Team" and "Contact Allkinds Team" buttons
-    keyboard = get_start_menu_keyboard()
-    
-    await message.answer(welcome_text, reply_markup=keyboard)
+    try:
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"Welcome menu sent successfully to user {message.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending welcome menu: {e}")
 
 
 async def on_create_team(callback: types.CallbackQuery, state: FSMContext) -> None:

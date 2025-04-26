@@ -8,6 +8,7 @@ import os
 import sys
 import asyncio
 import logging
+import json
 from aiogram import Bot
 from loguru import logger
 
@@ -52,9 +53,16 @@ async def check_and_set_webhook():
         logger.info(f"RAILWAY_PUBLIC_DOMAIN: {railway_domain or 'Not set'}")
         logger.info(f"RAILWAY_PUBLIC_URL: {railway_url or 'Not set'}")
         
-        # Ask if user wants to reset webhook
-        reset = input("Do you want to reset the webhook? (y/n): ").lower() == 'y'
-        if reset:
+        # Display menu options
+        print("\nOptions:")
+        print("1. Reset webhook")
+        print("2. Delete command menu")
+        print("3. Check recent updates")
+        print("4. Quit")
+        
+        choice = input("\nEnter choice (1-4): ")
+        
+        if choice == '1':
             # Delete current webhook
             await bot.delete_webhook(drop_pending_updates=True)
             logger.info("Deleted current webhook")
@@ -87,24 +95,49 @@ async def check_and_set_webhook():
             # Verify new webhook
             webhook_info = await bot.get_webhook_info()
             logger.info(f"New webhook URL: {webhook_info.url}")
+        
+        elif choice == '2':
+            # Delete bot commands menu
+            await bot.delete_my_commands()
+            logger.info("Bot commands menu removed successfully")
             
-            return True
+        elif choice == '3':
+            # Check for recent updates
+            logger.info("Checking for recent updates...")
+            try:
+                updates = await bot.get_updates(limit=10, timeout=5)
+                if updates:
+                    logger.info(f"Found {len(updates)} recent updates")
+                    for update in updates:
+                        logger.info(f"Update ID: {update.update_id}")
+                        if update.message:
+                            logger.info(f"Message from {update.message.from_user.id}: {update.message.text}")
+                        if update.callback_query:
+                            logger.info(f"Callback query from {update.callback_query.from_user.id}: {update.callback_query.data}")
+                else:
+                    logger.info("No recent updates found")
+            except Exception as e:
+                logger.error(f"Error getting updates: {e}")
+        
+        else:
+            logger.info("Exiting without changes")
+            
+        return True
     except Exception as e:
         logger.error(f"Error: {e}")
         return False
     finally:
         # Close the bot session
         await bot.session.close()
-    
-    return True
+
 
 if __name__ == "__main__":
     try:
         success = asyncio.run(check_and_set_webhook())
         if success:
-            logger.info("Webhook check/reset completed successfully")
+            logger.info("Operation completed successfully")
         else:
-            logger.error("Webhook check/reset failed")
+            logger.error("Operation failed")
             sys.exit(1)
     except Exception as e:
         logger.error(f"Unhandled error: {e}")
