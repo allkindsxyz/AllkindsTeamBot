@@ -298,7 +298,7 @@ async def main():
     try:
         # Check for database migrations
         if not os.environ.get("SKIP_DB_INIT"):
-            engine = get_async_engine(settings.DATABASE_URL)
+            engine = get_async_engine(settings.db_url)
             await init_models(engine)
             logger.info("Database initialized")
         
