@@ -2999,30 +2999,34 @@ async def on_show_start_menu(message: types.Message, state: FSMContext) -> None:
     await show_welcome_menu(message)
 
 
-async def on_add_question_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    """Handle add question callback button."""
-    await callback.answer()
+async def on_add_question_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle add question button from group menu."""
+    logger.info(f"User {callback.from_user.id} clicked Add Question button")
     
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    group_name = data.get("current_group_name")
-    
-    if not group_id or not group_name:
-        await callback.message.answer("Error: Could not determine your current group.")
-        return
-    
-    # Set state to creating question
-    await state.set_state(QuestionFlow.creating_question)
-    
-    # Store the menu message ID for later cleanup
-    await state.update_data(menu_msg_id=callback.message.message_id)
-    
-    # Show group menu with add_question section highlighted
-    await show_group_menu(callback.message, group_id, group_name, state, current_section="add_question", session=session)
-    
-    # Send prompt for the question
-    prompt_msg = await callback.message.answer("Please ask your yes/no question:")
-    await state.update_data(question_prompt_msg_id=prompt_msg.message_id)
+    try:
+        # Extract current group info from state
+        data = await state.get_data()
+        group_id = data.get("current_group_id")
+        group_name = data.get("current_group_name")
+        
+        if not group_id:
+            await callback.answer("No group selected", show_alert=True)
+            return
+            
+        # Tell user we're processing
+        await callback.answer("Starting question creation...")
+        
+        # First respond to the callback to avoid timeouts
+        prompt_text = "Please enter your yes/no question below:"
+        await callback.message.answer(prompt_text)
+        
+        # Set state for the next message
+        await state.set_state(QuestionFlow.creating_question)
+        
+        logger.info(f"User {callback.from_user.id} set to state {QuestionFlow.creating_question} for adding question to group {group_id}")
+    except Exception as e:
+        logger.error(f"Error processing add_question callback: {e}")
+        await callback.answer("Error starting question creation", show_alert=True)
 
 
 async def on_show_questions_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -3049,195 +3053,42 @@ async def on_show_questions_callback(callback: types.CallbackQuery, state: FSMCo
 
 
 async def on_find_match_callback(
-    callback: types.CallbackQuery, state: FSMContext
+    callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None
 ) -> None:
-    """
-    Handles the callback when user presses the Find Match button.
-    Retrieves user answers, finds best match, and shows match confirmation.
-    """
-    # Answer callback to close the loading indicator
-    await callback.answer()
+    """Handle find match button from menu."""
+    logger.info(f"User {callback.from_user.id} clicked Find Match button with data '{callback.data}'")
     
-    # Store the message ID of the callback message (the one with Find a match button)
-    await state.update_data(find_match_message_id=callback.message.message_id)
-    
-    # Clean up any previous messages
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    group_name = data.get("current_group_name", f"Team {group_id}")
-    
-    # Clean up any info messages
-    for msg_id in [data.get("group_info_msg_id"), data.get("instructions_msg_id")]:
-        if msg_id:
-            try:
-                await callback.bot.delete_message(callback.message.chat.id, msg_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete message: {e}")
-    
-    # We no longer delete the group menu message - we keep it visible
-    
-    # Update state to reflect current section
-    await state.update_data(current_section="matches")
-    
-    # Get required data from database
-    user_id = callback.from_user.id
-    user_tg_id = callback.from_user.id
-    
-    # Show "searching" message
-    wait_message = await callback.message.answer("Searching for your best match... 🔍")
-    
-    async with async_session_factory() as session:
-        # Check if user exists in database
-        user = await get_user_by_tg_id(user_tg_id, session)
-        if not user:
-            logger.error(f"User {user_tg_id} not found in database during find match.")
-            await wait_message.delete()
-            error_msg = await callback.message.answer("⚠️ Error: Your profile data was not found. Please restart the bot with /start.")
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
+    try:
+        # Get user data from state
+        data = await state.get_data()
+        group_id = data.get("current_group_id")
+        
+        if not group_id:
+            await callback.answer("Please select a group first", show_alert=True)
             return
-            
-        # Check if user has enough points
-        if user.points < FIND_MATCH_COST:
-            logger.info(f"User {user_tg_id} tried to find match but has insufficient points ({user.points})")
-            await wait_message.delete()
-            await callback.message.answer(
-                f"⚠️ You need {FIND_MATCH_COST} points to find a match. You currently have {user.points} points.",
-                reply_markup=get_earn_points_keyboard()
-            )
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
+        
+        # Get user from DB using callback sender's info
+        if not session:
+            await callback.answer("Database connection unavailable", show_alert=True)
             return
-            
-        # Check if user has answered enough questions
-        answer_repo = AnswerRepository()
-        question_count = await answer_repo.get_user_answer_count(session, user.id)
         
-        if question_count < MIN_QUESTIONS_FOR_MATCH:
-            logger.info(f"User {user_tg_id} tried to find match but has only answered {question_count} questions")
-            await wait_message.delete()
-            await callback.message.answer(
-                f"⚠️ You need to answer at least {MIN_QUESTIONS_FOR_MATCH} questions to find a match. "
-                f"You've currently answered {question_count} questions."
-            )
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
-            return
-            
-        # Get user group information
-        group_repo = GroupRepository()
-        membership_repo = GroupMembershipRepository()
+        # Acknowledge the callback
+        await callback.answer("Finding matches...")
         
-        # Get user's current group
-        current_group = await membership_repo.get_current_group_for_user(session, user.id)
-        if not current_group:
-            logger.error(f"User {user_tg_id} has no current group during find match.")
-            await wait_message.delete()
-            await callback.message.answer("⚠️ Error: You are not assigned to any group. Please contact support.")
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
-            return
-            
-        # Find best match
-        try:
-            best_match = await find_best_match(session, user.id)
-        except Exception as e:
-            logger.error(f"Error finding match for user {user_tg_id}: {e}")
-            await wait_message.delete()
-            await callback.message.answer("⚠️ An error occurred while finding your match. Please try again later.")
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
-            return
-            
-        # Handle case when no match is found
-        if not best_match:
-            logger.info(f"No match found for user {user_tg_id}")
-            await wait_message.delete()
-            await callback.message.answer(
-                "😔 We couldn't find a suitable match for you at this time. "
-                "Please try again later or answer more questions to improve matching."
-            )
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
-            return
-            
-        # Deduct points for finding a match
-        user.points -= FIND_MATCH_COST
-        session.add(user)
-        await session.commit()
+        # Get current user
+        user_data = {
+            "id": callback.from_user.id,
+            "first_name": callback.from_user.first_name,
+            "last_name": callback.from_user.last_name,
+            "username": callback.from_user.username
+        }
+        db_user, _ = await user_repo.get_or_create_user(session, user_data)
         
-        # Get matched user details
-        matched_user = await get_user_by_id(best_match.matched_user_id, session)
-        if not matched_user:
-            logger.error(f"Matched user {best_match.matched_user_id} not found in database.")
-            await wait_message.delete()
-            await callback.message.answer("⚠️ An error occurred while retrieving match details. Please try again.")
-            await show_group_menu(callback.message, group_id, group_name, state, current_section="questions", session=session)
-            return
-            
-        # Format the match message
-        percentage = round(best_match.similarity * 100)
-        common_questions = best_match.common_questions
-        
-        # Get the matched user's nickname and photo from the GroupMember table
-        matched_user_nickname = None
-        matched_user_photo = None
-        
-        try:
-            # Get the current group
-            group_id = data.get("current_group_id")
-            if group_id:
-                # Get the group member record for the matched user
-                group_member = await group_repo.get_group_member(session, matched_user.id, int(group_id))
-                if group_member:
-                    matched_user_nickname = getattr(group_member, "nickname", None)
-                    matched_user_photo = getattr(group_member, "photo_file_id", None)
-                    logger.info(f"Found nickname '{matched_user_nickname}' and photo '{matched_user_photo}' for matched user {matched_user.id}")
-        except Exception as e:
-            logger.warning(f"Error retrieving nickname/photo for matched user {matched_user.id}: {e}")
-            # Continue without nickname/photo - this is not a critical error
-        
-        # Start constructing the message
-        match_text = [
-            f"🎯 <b>We found a match for you!</b>\n",
-        ]
-        
-        # Use nickname if available, otherwise fall back to first name
-        display_name = matched_user_nickname if matched_user_nickname else matched_user.first_name
-        match_text.append(f"👤 <b>{display_name}</b> ({percentage}% match cohesion)")
-        match_text.append(f"📋 Based on {common_questions} common questions\n")
-        
-        # Add category breakdown
-        if best_match.category_scores:
-            match_text.append("<b>Category breakdown:</b>")
-            for category, score in best_match.category_scores.items():
-                if category in best_match.category_counts and best_match.category_counts[category] > 0:
-                    cat_percentage = round(score * 100)
-                    count = best_match.category_counts[category]
-                    match_text.append(f"• {category}: {cat_percentage}% ({count} Qs)")
-                    
-        # Create confirmation keyboard
-        keyboard = types.InlineKeyboardMarkup(row_width=2)
-        keyboard.add(
-            types.InlineKeyboardButton("✅ Confirm", callback_data=f"confirm_match:{matched_user.id}"),
-            types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_match")
-        )
-        
-        # Delete wait message and show match confirmation
-        await wait_message.delete()
-        match_message = await callback.message.answer("\n".join(match_text), reply_markup=keyboard, parse_mode="HTML")
-        
-        # Update state with match information
-        await state.update_data(
-            has_pending_match=True,
-            pending_match_user_id=matched_user.id,
-            pending_match_score=best_match.similarity,
-            pending_match_common_questions=best_match.common_questions,
-            pending_match_category_scores=best_match.category_scores,
-            pending_match_category_counts=best_match.category_counts,
-            pending_match_message_id=match_message.message_id,
-            pending_match_nickname=matched_user_nickname,
-            pending_match_photo=matched_user_photo
-        )
-        
-        # Display a single menu message with the balance - only do this once to avoid flickering
-        await show_group_menu(callback.message, group_id, group_name, state, current_section="matches", session=session)
-        
-    return QuestionFlow.waiting
+        # Delegate to the message handler implementation
+        await on_find_match(callback.message, state, session)
+    except Exception as e:
+        logger.error(f"Error in find_match callback: {e}")
+        await callback.answer("Error finding matches", show_alert=True)
 
 
 async def on_show_start_menu_callback(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -3307,6 +3158,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_use_corrected_text, F.data.startswith("use_corrected_text"))
     dp.callback_query.register(on_use_original_text, F.data.startswith("use_original_text"))
     
+    # Add handlers for reply keyboard buttons
+    dp.message.register(handle_find_match_message, F.text == "Find Match")
+    dp.message.register(handle_group_info_message, F.text == "Group Info")
+    dp.message.register(handle_instructions_message, F.text == "Instructions")
+    
     # Answered Questions
     dp.callback_query.register(on_load_answered_questions, F.data.startswith("load_answered_questions"))
     
@@ -3330,11 +3186,16 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_join_confirm, F.data == "join_confirm")
     dp.callback_query.register(on_cancel_join, F.data == "join_cancel")
     
-    # Group Menu
+    # Group Menu - Additional variant registrations to handle potential inconsistencies
     dp.callback_query.register(on_show_start_menu_callback, F.data == "show_start_menu")
     dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
     dp.callback_query.register(on_add_question_callback, F.data == "add_question")
+    
+    # Enhanced registration for find_match
     dp.callback_query.register(on_find_match_callback, F.data == "find_match")
+    # Also register with exact string matching for robustness
+    dp.callback_query.register(on_find_match_callback, lambda c: c.data == "find_match")
+    
     # Fix for join_group button - handle both the plain and parameterized versions
     dp.callback_query.register(on_join_group_callback, F.data.startswith("join_group:"))
     dp.callback_query.register(on_join_group_callback, F.data == "join_group")
@@ -3354,7 +3215,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_group_rename, GroupFlow.waiting_for_rename)
     dp.message.register(process_group_description_edit, GroupFlow.waiting_for_description_edit)
     
-    # ... other existing handlers ...
+    # Debugging catch-all - register this LAST to catch any unhandled callbacks
+    dp.callback_query.register(debug_callback)
+    
+    # Catch-all for text messages (register last for text handlers)
+    dp.message.register(echo_debug_handler, F.text)
 
 
 async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -4259,4 +4124,137 @@ async def on_use_original_text(callback: types.CallbackQuery, state: FSMContext)
     confirmation_message = await callback.message.answer(confirmation_text, reply_markup=keyboard)
     await state.update_data(confirmation_message_id=confirmation_message.message_id)
     await state.set_state(QuestionFlow.reviewing_question)
+
+
+async def handle_instructions_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle the 'Instructions' button from the reply keyboard."""
+    logger.info(f"User {message.from_user.id} pressed Instructions button")
+    
+    # Get current group info
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    group_name = data.get("current_group_name")
+    
+    if not group_id:
+        await message.answer("Please select a group first.")
+        return
+    
+    instructions_text = (
+        "📝 <b>Instructions</b>\n\n"
+        "• Answer questions with yes/no to find matches\n"
+        "• Add your own questions for others\n"
+        "• Find matches based on shared values\n"
+        "• Chat anonymously with your matches\n\n"
+        "The more questions you answer, the better your matches will be!"
+    )
+    
+    try:
+        await message.answer(instructions_text, parse_mode="HTML")
+        # Show group menu again to maintain context
+        if group_id and group_name:
+            await show_group_menu(message, group_id, group_name, state, session=session)
+    except Exception as e:
+        logger.error(f"Error sending instructions: {e}")
+
+
+async def handle_group_info_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle the 'Group Info' button from the reply keyboard."""
+    logger.info(f"User {message.from_user.id} pressed Group Info button")
+    
+    # Get current group info
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    
+    if not group_id or not session:
+        await message.answer("Please select a group first or reconnect to the bot.")
+        return
+    
+    try:
+        # Get group details from database
+        from src.db.models import Group
+        query = select(Group).where(Group.id == group_id)
+        result = await session.execute(query)
+        group = result.scalar_one_or_none()
+        
+        if not group:
+            await message.answer("Group information not found.")
+            return
+        
+        # Get member count
+        from src.db.models import GroupMember
+        query = select(func.count()).select_from(GroupMember).where(GroupMember.group_id == group_id)
+        result = await session.execute(query)
+        member_count = result.scalar_one_or_none() or 0
+        
+        # Get question count
+        from src.db.models import Question
+        query = select(func.count()).select_from(Question).where(
+            Question.group_id == group_id,
+            Question.is_active == True
+        )
+        result = await session.execute(query)
+        question_count = result.scalar_one_or_none() or 0
+        
+        # Format group info message
+        group_info = (
+            f"📊 <b>{group.name}</b>\n\n"
+            f"<i>{group.description or 'No description available'}</i>\n\n"
+            f"👥 Members: {member_count}\n"
+            f"❓ Questions: {question_count}\n"
+            f"🗓 Created: {group.created_at.strftime('%Y-%m-%d')}\n"
+        )
+        
+        await message.answer(group_info, parse_mode="HTML")
+        # Show group menu again to maintain context
+        await show_group_menu(message, group_id, group.name, state, session=session)
+    
+    except Exception as e:
+        logger.error(f"Error getting group info: {e}")
+        await message.answer("Error fetching group information.")
+
+
+async def handle_find_match_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle the 'Find Match' button from the reply keyboard."""
+    logger.info(f"User {message.from_user.id} pressed Find Match button")
+    
+    # Redirect to the existing find match handler
+    await on_find_match(message, state, session)
+
+
+# Add this debugging helper function at the top of the file
+async def debug_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
+    """Debug handler for unhandled callbacks - logs and tells user which callback wasn't handled."""
+    logger.error(f"UNHANDLED CALLBACK: '{callback.data}' from user {callback.from_user.id}")
+    
+    # Log current state
+    current_state = await state.get_state()
+    logger.error(f"User state during unhandled callback: {current_state}")
+    
+    # Log state data
+    state_data = await state.get_data()
+    logger.error(f"State data: {state_data}")
+    
+    # Notify user - but only in development mode to avoid confusion
+    is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
+    if is_dev:
+        await callback.answer(f"Unhandled callback: {callback.data}", show_alert=True)
+    else:
+        await callback.answer("Processing...")
+
+
+async def echo_debug_handler(message: types.Message, state: FSMContext) -> None:
+    """Debug handler to echo text messages and log state."""
+    logger.info(f"ECHO DEBUG: Received text '{message.text}' from user {message.from_user.id}")
+    
+    # Get state information
+    current_state = await state.get_state()
+    state_data = await state.get_data()
+    
+    logger.info(f"Current state: {current_state}")
+    logger.info(f"State data: {state_data}")
+    
+    # Don't actually echo in production
+    is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
+    if is_dev:
+        await message.reply(f"Debug mode: Your message '{message.text}' was received, but no handler processed it.")
 

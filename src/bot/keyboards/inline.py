@@ -2,6 +2,7 @@ from aiogram import types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from src.db.models import AnswerType
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from loguru import logger
 
 
 def get_question_keyboard() -> InlineKeyboardMarkup:
@@ -32,34 +33,40 @@ def get_start_menu_keyboard() -> types.InlineKeyboardMarkup:
 
 def get_group_menu_keyboard(current_section=None) -> types.InlineKeyboardMarkup:
     """Return keyboard for group menu with navigation buttons."""
-    # Create buttons with one disabled if it matches current_section
+    # Log the keyboard generation for debugging
+    logger.debug(f"Creating group menu keyboard with current_section={current_section}")
+    
+    # Create buttons with visual indicator if selected
     questions_btn = types.InlineKeyboardButton(
         text="❓ Questions" if current_section != "questions" else "️▶️ Questions", 
         callback_data="show_questions"
     )
-    questions_btn.disable = current_section == "questions"
     
     add_question_btn = types.InlineKeyboardButton(
         text="➕ Add Question" if current_section != "add_question" else "▶️ Add Question", 
         callback_data="add_question"
     )
-    add_question_btn.disable = current_section == "add_question"
     
     matches_btn = types.InlineKeyboardButton(
         text="🤝 Matches" if current_section != "matches" else "▶️ Matches", 
-        callback_data="show_matches"
+        callback_data="find_match"  # Make sure this matches the handler registration
     )
-    matches_btn.disable = current_section == "matches"
     
     main_menu_btn = types.InlineKeyboardButton(
         text="🔙 Main Menu", 
         callback_data="show_start_menu"
     )
     
-    return types.InlineKeyboardMarkup(inline_keyboard=[
+    # Create the keyboard
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [questions_btn, add_question_btn],
         [matches_btn, main_menu_btn]
     ])
+    
+    # Log the generated keyboard for debugging
+    logger.debug(f"Generated keyboard with callbacks: show_questions, add_question, find_match, show_start_menu")
+    
+    return keyboard
 
 
 def get_group_menu_reply_keyboard(current_section=None, balance=0) -> types.ReplyKeyboardMarkup:
