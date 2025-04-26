@@ -12,7 +12,7 @@ import traceback
 import signal
 import atexit
 import socket
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 import ssl
@@ -94,7 +94,7 @@ def check_lock_file():
             data = {
                 "pid": os.getpid(),
                 "hostname": socket.gethostname(),
-                "started_at": datetime.now(UTC).isoformat()
+                "started_at": datetime.now(timezone.utc).isoformat()
             }
             json.dump(data, f)
         logger.info(f"Created lock file for PID {os.getpid()}")
@@ -287,7 +287,7 @@ async def lifespan(app: web.Application):
 async def main():
     """Main entry point for the bot."""
     logger.info("==================================================")
-    logger.info(f"Starting AllkindsTeamBot at {datetime.now(UTC).isoformat()}")
+    logger.info(f"Starting AllkindsTeamBot at {datetime.now(timezone.utc).isoformat()}")
     logger.info(f"Running in {'Railway' if IS_RAILWAY else 'Local'} environment")
     
     # Check if another instance is running
@@ -312,7 +312,7 @@ async def main():
         traceback.print_exc()
     finally:
         remove_lock_file()
-        logger.info(f"Bot stopped at {datetime.now(UTC).isoformat()}")
+        logger.info(f"Bot stopped at {datetime.now(timezone.utc).isoformat()}")
         logger.info("==================================================")
 
 if __name__ == "__main__":
