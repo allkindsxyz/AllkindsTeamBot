@@ -138,9 +138,7 @@ def get_async_engine(database_url=None):
             pool_recycle=300,
             pool_timeout=30,
             pool_size=5,
-            max_overflow=10,
-            # Explicitly set driver_name to asyncpg for PostgreSQL
-            connect_args={"driver_name": "asyncpg"} if "postgresql" in database_url or "postgres" in database_url else {}
+            max_overflow=10
         )
     # Otherwise, return the global engine
     return engine
