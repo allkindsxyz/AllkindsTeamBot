@@ -3297,14 +3297,14 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(process_new_question_text, QuestionFlow.reviewing_question)
     dp.callback_query.register(on_confirm_add_question, F.data.startswith("confirm_add_question"))
     dp.callback_query.register(on_cancel_add_question, F.data.startswith("cancel_add_question"))
-    dp.callback_query.register(on_use_original_text, F.data.startswith("use_original_text"))
     dp.callback_query.register(on_use_corrected_text, F.data.startswith("use_corrected_text"))
+    dp.callback_query.register(on_use_original_text, F.data.startswith("use_original_text"))
     
     # Answered Questions
     dp.callback_query.register(on_load_answered_questions, F.data.startswith("load_answered_questions"))
     
     # Delete Question
-    dp.callback_query.register(on_delete_question, F.data.startswith("delete_question_callback"))
+    dp.callback_query.register(on_delete_question_callback, F.data.startswith("delete_question_callback"))
     
     # Create Team
     dp.callback_query.register(on_create_team, F.data == "create_team")
@@ -3599,12 +3599,8 @@ async def on_go_to_group(callback: types.CallbackQuery, state: FSMContext, sessi
 
 
 async def on_answer_error(callback: types.CallbackQuery, chat_id: int) -> None:
-    """Handle error in answer processing."""
-    try:
-        await callback.answer("Sorry, there was an error processing your answer.")
-        await callback.bot.send_message(chat_id, "Sorry, there was an error processing your answer.")
-    except Exception as e:
-        logger.error("Failed to send error message to user")
+    """Handle error when answering a question."""
+    await callback.answer("An error occurred while processing your answer.", show_alert=True)
 
 
 async def cmd_clear_profile(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
@@ -3788,69 +3784,9 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
         await message.answer("You've answered all available questions in this group!")
 
 
-async def on_use_corrected_text(callback: types.CallbackQuery, state: FSMContext) -> None:
-    """Handle when the user chooses to use the corrected text."""
-    user_data = await state.get_data()
-    corrected_text = user_data.get("corrected_question_text", "")
-    correction_msg_id = user_data.get("correction_msg_id")
-    
-    # Update the state with corrected text as the new question text
-    await state.update_data(new_question_text=corrected_text)
-    
-    # Delete the correction message
-    if correction_msg_id:
-        try:
-            await callback.bot.delete_message(
-                chat_id=callback.message.chat.id,
-                message_id=correction_msg_id
-            )
-        except Exception as e:
-            logger.warning(f"Failed to delete correction message: {e}")
-    
-    # Show confirmation with the corrected text
-    confirmation_text = f"Your question:\n\n{corrected_text}\n\nIs this correct and ready to be added?"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="✅ Yes", callback_data="confirm_add_question"),
-            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_add_question"),
-        ]
-    ])
-    confirmation_message = await callback.message.answer(confirmation_text, reply_markup=keyboard)
-    await state.update_data(confirmation_message_id=confirmation_message.message_id)
-    await state.set_state(QuestionFlow.reviewing_question)
-
-
-async def on_use_original_text(callback: types.CallbackQuery, state: FSMContext) -> None:
-    """Handle when the user chooses to use the original text."""
-    user_data = await state.get_data()
-    original_text = user_data.get("original_question_text", "")
-    correction_msg_id = user_data.get("correction_msg_id")
-    
-    # Update the state with original text as the new question text
-    await state.update_data(new_question_text=original_text)
-    
-    # Delete the correction message
-    if correction_msg_id:
-        try:
-            await callback.bot.delete_message(
-                chat_id=callback.message.chat.id,
-                message_id=correction_msg_id
-            )
-        except Exception as e:
-            logger.warning(f"Failed to delete correction message: {e}")
-    
-    # Show confirmation with the original text
-    confirmation_text = f"Your question:\n\n{original_text}\n\nIs this correct and ready to be added?"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="✅ Yes", callback_data="confirm_add_question"),
-            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_add_question"),
-        ]
-    ])
-    confirmation_message = await callback.message.answer(confirmation_text, reply_markup=keyboard)
-    await state.update_data(confirmation_message_id=confirmation_message.message_id)
-    await state.set_state(QuestionFlow.reviewing_question)
-
+async def on_delete_question_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Redirect to on_delete_question function for backward compatibility."""
+    await on_delete_question(callback, state, session)
 
 async def on_leave_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle when user wants to leave a group."""
@@ -3880,7 +3816,6 @@ async def on_leave_group_callback(callback: types.CallbackQuery, state: FSMConte
     ])
     
     await callback.message.edit_text(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
-
 
 async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle confirmation to leave a group."""
@@ -3938,7 +3873,6 @@ async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContex
         logger.error(f"Error removing user from group: {e}")
         await callback.answer("Error leaving the group. Please try again.", show_alert=True)
 
-
 async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Handle cancellation of leaving a group."""
     await callback.answer()
@@ -3956,7 +3890,6 @@ async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext
         # If no current group, just show welcome menu
         await callback.message.edit_text("Action cancelled.")
         await show_welcome_menu(callback.message)
-
 
 async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle group management actions."""
@@ -4001,6 +3934,7 @@ async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMCont
     ])
     
     await callback.message.edit_text(management_text, reply_markup=keyboard, parse_mode="HTML")
+
 
 async def on_group_rename(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle group rename request."""
@@ -4106,16 +4040,9 @@ async def on_confirm_group_delete(callback: types.CallbackQuery, state: FSMConte
     
     # Attempt to delete the group
     try:
-        # Delete all group members
-        members = await group_repo.get_group_members(session, group_id)
-        for member in members:
-            await group_repo.remove_user_from_group(session, member.user_id, group_id)
-        
-        # Delete all questions and answers (this would ideally be handled by cascade delete in DB)
-        # Delete the group itself
-        # (Here we would need additional repo functions or direct SQL)
-        
         # For now, just mark the group as inactive
+        from sqlalchemy import update 
+        from src.db.models.group import Group
         stmt = update(Group).where(Group.id == group_id).values(is_active=False)
         await session.execute(stmt)
         await session.commit()
@@ -4179,6 +4106,8 @@ async def process_group_rename(message: types.Message, state: FSMContext, sessio
     
     # Update the group name
     try:
+        from sqlalchemy import update 
+        from src.db.models.group import Group
         stmt = update(Group).where(Group.id == group_id).values(name=new_name)
         await session.execute(stmt)
         await session.commit()
@@ -4239,6 +4168,8 @@ async def process_group_description_edit(message: types.Message, state: FSMConte
     
     # Update the group description
     try:
+        from sqlalchemy import update 
+        from src.db.models.group import Group
         stmt = update(Group).where(Group.id == group_id).values(description=new_description)
         await session.execute(stmt)
         await session.commit()
