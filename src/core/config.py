@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # Webhook configuration
     USE_WEBHOOK: bool = Field(default=False, alias='USE_WEBHOOK')  # Default to polling mode
-    WEBHOOK_HOST: str = Field(default="https://allkindsbot.up.railway.app", alias='WEBHOOK_HOST')
+    WEBHOOK_HOST: str = Field(default="https://allkindsteambot-production.up.railway.app", alias='WEBHOOK_HOST')
     WEBHOOK_PATH: str = Field(default="/webhook", alias='WEBHOOK_PATH')
     WEBHOOK_SSL_CERT: str = Field(default="webhook_cert.pem", alias='WEBHOOK_SSL_CERT')
     WEBHOOK_SSL_PRIV: str = Field(default="webhook_pkey.pem", alias='WEBHOOK_SSL_PRIV')
