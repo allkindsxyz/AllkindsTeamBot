@@ -54,13 +54,36 @@ log "Health check port: ${PORT}"
 log "Bot token available: $(if [[ -n "${BOT_TOKEN}" ]]; then echo "YES"; else echo "NO"; fi)"
 log "Working directory: $(pwd)"
 
-# Reset webhook to make sure we're starting fresh
-log "Resetting webhook..."
-curl -s "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true" > /dev/null
+# Set proper webhook in production, or reset in development
+if [[ "${RAILWAY_ENVIRONMENT}" == "production" && -n "${WEBHOOK_DOMAIN}" ]]; then
+  log "Setting up webhook for production environment"
+  WEBHOOK_PATH=${WEBHOOK_PATH:-"/webhook"}
+  WEBHOOK_URL="${WEBHOOK_DOMAIN}${WEBHOOK_PATH}"
+  log "Setting webhook to: ${WEBHOOK_URL}"
+  RESPONSE=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${WEBHOOK_URL}&drop_pending_updates=true")
+  log "Webhook setup response: ${RESPONSE}"
+  
+  # Verify webhook is set correctly
+  WEBHOOK_INFO=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")
+  log "Webhook info: ${WEBHOOK_INFO}"
+else
+  # For local development, delete webhook to use polling
+  log "Development environment detected. Deleting webhook to use polling mode..."
+  curl -s "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true" > /dev/null
+fi
 
 # Start the bot
 run_bot() {
   log "Starting the bot process..."
+  
+  # Export USE_WEBHOOK explicitly based on environment
+  if [[ "${RAILWAY_ENVIRONMENT}" == "production" && -n "${WEBHOOK_DOMAIN}" ]]; then
+    export USE_WEBHOOK=true
+    log "Running in webhook mode"
+  else
+    export USE_WEBHOOK=false
+    log "Running in polling mode"
+  fi
   
   # Run the bot in the foreground
   python3 -m src.bot.main
