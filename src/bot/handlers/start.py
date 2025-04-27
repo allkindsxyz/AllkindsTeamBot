@@ -272,15 +272,12 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
     logger.info("========== END OF START COMMAND ==========")
 
 
-async def display_single_question(message: types.Message, question, db_user, session: AsyncSession) -> None:
+async def display_single_question(message: types.Message, question, db_user, session: AsyncSession, state: FSMContext = None) -> None:
     """Display a single question to the user."""
-    logger.info(f"Starting display_single_question for question {question.id} to user {db_user.id}")
-    
-    # Check if user can delete this question
-    can_delete = await can_delete_question(db_user.id, question, session)
-    
-    # Just the question text without quotation marks
     question_text = question.text
+    
+    # Check if the user can delete this question
+    can_delete = await can_delete_question(db_user.id, question, session)
     
     # Create keyboard with answer options
     answer_buttons = [
@@ -331,10 +328,11 @@ async def display_single_question(message: types.Message, question, db_user, ses
         logger.info(f"Successfully displayed question {question.id} for user {db_user.id}, message ID: {sent_msg.message_id}")
         
         # Store the message ID in state for future reference
-        await state.update_data(
-            last_question_message_id=sent_msg.message_id,
-            current_displayed_question_id=question.id
-        )
+        if state:
+            await state.update_data(
+                last_question_message_id=sent_msg.message_id,
+                current_displayed_question_id=question.id
+            )
         
         return sent_msg
     except Exception as e:
@@ -483,7 +481,7 @@ async def check_and_display_next_question(message: types.Message, db_user, group
             await cleanup_previous_questions(message, state)
                 
             try:
-                await display_single_question(message, next_question, db_user, session)
+                await display_single_question(message, next_question, db_user, session, state)
                 logger.info(f"Session {session_id}: Successfully displayed question {next_question.id} for user {db_user.id}")
             except Exception as e:
                 logger.error(f"Error displaying question {next_question.id}: {e}", exc_info=True)
