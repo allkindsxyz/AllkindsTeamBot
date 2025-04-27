@@ -1047,7 +1047,7 @@ async def on_join_confirm(callback: types.CallbackQuery, state: FSMContext, sess
 
 async def show_group_menu(message: types.Message, group_id: int, group_name: str, state: FSMContext, edit: bool = False, current_section: str = None, session: AsyncSession = None, text: str = None) -> None:
     """Shows the main menu for a user within a group.
-    If text is None, will try to use an invisible character to keep the chat clean.
+    If text is None, will use a welcome message instead of trying to use invisible characters.
     """
     try:
         # Update state with group info
@@ -1084,63 +1084,47 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
                 resize_keyboard=True
             )
         
-        # Rest of the function remains unchanged
-        minimal_text_needed = (
-            text is None or
-            current_section in ["matches", "questions", "add_question", "group_info"]
-        )
-        logger.info(f"MENU DEBUG: Using minimal text: {minimal_text_needed}, current_section: {current_section}")
-
-        if minimal_text_needed:
-            # Use a non-empty, minimal text (space with zero-width joiners to ensure it's visible but minimal)
-            display_text = "‎‎ ‎" # Using spaces and zero-width characters to ensure it's non-empty
-            logger.info("MENU DEBUG: Using minimal display text")
-            
-            # Try editing the previous menu message if possible
-            data = await state.get_data()
-            prev_menu_msg_id = data.get("group_menu_msg_id")
-            logger.info(f"MENU DEBUG: Previous menu message ID from state: {prev_menu_msg_id}")
-            
-            if prev_menu_msg_id and isinstance(message, types.CallbackQuery): # Only edit on callbacks
-                logger.info(f"MENU DEBUG: Attempting to edit previous menu message {prev_menu_msg_id}")
-                try:
-                    await message.message.edit_text(display_text, reply_markup=keyboard)
-                    await state.update_data(group_menu_msg_id=message.message.message_id) # Update stored ID
-                    logger.info(f"MENU DEBUG: Successfully edited previous menu message")
-                    return # Edited successfully, no need to send new message
-                except Exception as edit_err:
-                    logger.warning(f"MENU DEBUG: Could not edit previous menu message {prev_menu_msg_id}: {edit_err}")
-                    # Proceed to send a new message
-
-            # If editing failed or not applicable, send a new minimal message
-            logger.info("MENU DEBUG: Sending new menu message with minimal text")
-            try:
-                menu_msg = await message.answer(display_text, reply_markup=keyboard)
-                await state.update_data(group_menu_msg_id=menu_msg.message_id)
-                logger.info(f"MENU DEBUG: Sent new menu message, ID: {menu_msg.message_id}")
-            except Exception as answer_error:
-                logger.error(f"MENU DEBUG: Error sending menu message: {answer_error}")
-                logger.exception("MENU DEBUG: Full traceback for menu message error:")
-                raise
-
+        # Always use visible text - no more invisible characters
+        if text is None:
+            if current_section == "questions":
+                display_text = f"📋 Questions in {group_name}"
+            elif current_section == "matches":
+                display_text = f"💞 Find matches in {group_name}"
+            elif current_section == "add_question":
+                display_text = f"➕ Add new question to {group_name}"
+            elif current_section == "group_info":
+                display_text = f"ℹ️ Information about {group_name}"
+            else:
+                display_text = f"🏡 Welcome to {group_name}"
+                if points_text:
+                    display_text += f"\n{points_text}"
         else:
-            # Show the full message for other contexts (or if text was provided)
-            display_text = text or f"You are in <b>{group_name}</b>.\n{points_text}\nWhat would you like to do?"
-            logger.info(f"MENU DEBUG: Using full display text")
+            display_text = text
+
+        # Try editing the previous menu message if possible
+        data = await state.get_data()
+        prev_menu_msg_id = data.get("group_menu_msg_id")
+        if prev_menu_msg_id and isinstance(message, types.CallbackQuery): # Only edit on callbacks
             try:
-                menu_msg = await message.answer(display_text, reply_markup=keyboard, parse_mode="HTML")
-                # Store message ID in state so we can edit/delete it later if needed
-                await state.update_data(group_menu_msg_id=menu_msg.message_id)
-                logger.info(f"MENU DEBUG: Sent full menu message, ID: {menu_msg.message_id}")
-            except Exception as answer_error:
-                logger.error(f"MENU DEBUG: Error sending full menu message: {answer_error}")
-                logger.exception("MENU DEBUG: Full traceback for full menu message error:")
-                raise
-        
-        logger.info(f"MENU DEBUG: Successfully displayed group menu for user {message.from_user.id}")
+                await message.message.edit_text(display_text, reply_markup=keyboard, parse_mode="HTML")
+                await state.update_data(group_menu_msg_id=message.message.message_id) # Update stored ID
+                return # Edited successfully, no need to send new message
+            except Exception as edit_err:
+                logger.warning(f"Could not edit previous menu message {prev_menu_msg_id}: {edit_err}")
+                # Proceed to send a new message
+
+        # If editing failed or not applicable, send a new message
+        try:
+            menu_msg = await message.answer(display_text, reply_markup=keyboard, parse_mode="HTML")
+            await state.update_data(group_menu_msg_id=menu_msg.message_id)
+            logger.info(f"Sent new menu message with ID: {menu_msg.message_id}")
+        except Exception as answer_error:
+            logger.error(f"Error sending menu message: {answer_error}")
+            # Last resort fallback - just show a plain text message
+            await message.answer(f"Welcome to {group_name}. Use the commands to navigate.")
     except Exception as e:
-        logger.error(f"MENU DEBUG: Error in show_group_menu: {e}")
-        logger.exception("MENU DEBUG: Full traceback for group menu error:")
+        logger.error(f"Error in show_group_menu: {e}")
+        logger.exception("Full traceback for group menu error:")
         raise  # Re-raise the exception to be caught by the calling function
 
 
