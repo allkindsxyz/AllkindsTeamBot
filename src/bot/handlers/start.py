@@ -215,8 +215,13 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
         if not state:
             logger.info("State not provided, creating a new one")
             try:
-                state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
-                logger.info("Successfully created state context")
+                # Replace the attempt to create state manually (which doesn't work in this context)
+                # Instead, we'll just log a warning and continue without state
+                logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
+                
+                # REMOVE THIS PROBLEMATIC CODE:
+                # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+                # logger.info("Successfully created state context")
             except Exception as state_error:
                 logger.error(f"Failed to create state context: {state_error}")
                 logger.exception("State creation traceback:")
