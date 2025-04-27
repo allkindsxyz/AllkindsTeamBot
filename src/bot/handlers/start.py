@@ -4004,7 +4004,11 @@ async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("Error leaving the group. Please try again.", show_alert=True)
 
 async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
-    """Handle cancellation of leaving a group."""
+    """Handle cancellation of leaving a group.
+    
+    This should just cancel the operation and return to the group menu,
+    without making any changes to the user's group membership.
+    """
     logger.info(f"User {callback.from_user.id} cancelled leaving group")
     
     try:
@@ -4022,33 +4026,30 @@ async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext
         
         logger.info(f"User staying in group {group_id} ({group_name})")
         
-        # Return to the group info view
+        # Simply edit the message to confirm and return to group menu
         try:
-            # Show stay confirmation
+            # Show stay confirmation and return to group menu
             await callback.message.edit_text(f"You'll stay in <b>{group_name}</b>.", parse_mode="HTML")
             
-            # Get user from database if session available
-            if session:
-                user_tg = callback.from_user
-                db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-                
-                if db_user:
-                    # Return to group info screen
-                    logger.info(f"Showing group info again for user {db_user.id} in group {group_id}")
-                    
-                    # Trigger group info handler directly
-                    await handle_group_info_message(callback.message, state, session)
-                    return
+            # Wait a moment before showing the menu
+            await asyncio.sleep(1)
             
-            # Fallback to simple group menu
+            # Show the regular group menu - don't try to show group info
+            # as that requires additional database operations that might fail
             await show_group_menu(callback.message, group_id, group_name, state)
             
         except Exception as e:
-            logger.exception(f"Error showing group info after cancelling leave: {e}")
-            await show_group_menu(callback.message, group_id, group_name, state)
+            logger.exception(f"Error returning to menu after cancelling leave: {e}")
+            # Try one more time with minimal functionality
+            try:
+                await callback.message.answer("Action cancelled. Returning to menu...")
+                await show_group_menu(callback.message, group_id, group_name, state)
+            except Exception as menu_error:
+                logger.exception(f"Error showing group menu: {menu_error}")
+                await callback.message.answer("Please use /start to return to the main menu.")
     except Exception as e:
         logger.exception(f"Unhandled error in on_cancel_leave_group: {e}")
-        await callback.message.answer("An error occurred. Please use /start to restart.")
+        await callback.message.answer("Action cancelled. Please use /start if you need to restart.")
 
 async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle group management actions."""
