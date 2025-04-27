@@ -3228,6 +3228,12 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_join_confirm, F.data == "join_confirm")
     dp.callback_query.register(on_cancel_join, F.data == "join_cancel")
     
+    # Group Onboarding
+    logger.info("Registering group onboarding handlers")
+    dp.message.register(process_group_nickname, GroupOnboarding.waiting_for_nickname)
+    dp.message.register(process_group_photo, GroupOnboarding.waiting_for_photo)
+    dp.message.register(handle_invalid_photo_input, ~F.photo & ~F.text.startswith("/skip"), GroupOnboarding.waiting_for_photo)
+    
     # Group Menu - Additional variant registrations to handle potential inconsistencies
     dp.callback_query.register(on_show_start_menu_callback, F.data == "show_start_menu")
     dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
@@ -3451,9 +3457,22 @@ async def cmd_diagnostics(message: types.Message) -> None:
 
 
 async def handle_invalid_photo_input(message: types.Message, state: FSMContext) -> None:
-    """Handle any text messages in the photo upload state that are not /skip."""
-    logger.info(f"User {message.from_user.id} sent invalid text during photo upload: {message.text}")
-    await message.answer("Please send a photo for your profile or type /skip to use the default avatar.")
+    """Handle invalid input when a photo is expected."""
+    logger.warning(f"Invalid input during photo upload: User {message.from_user.id}, Content type: {message.content_type}")
+    
+    try:
+        current_state = await state.get_state()
+        logger.warning(f"Current state: {current_state}")
+        
+        # Only respond if we're actually in the waiting_for_photo state
+        if current_state == GroupOnboarding.waiting_for_photo.state:
+            logger.info("Sending help message for photo upload")
+            await message.answer("Please send a photo for your profile, or type /skip to use the default avatar.")
+        else:
+            logger.warning(f"Received invalid photo input but not in photo state, current state: {current_state}")
+    except Exception as e:
+        logger.exception(f"Error handling invalid photo input: {e}")
+        # Don't send error message here to avoid confusion if this handler was triggered incorrectly
 
 
 async def delete_user_answers_in_group(session: AsyncSession, user_id: int, group_id: int) -> int:
@@ -3704,71 +3723,125 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
     """Process photo input during group onboarding."""
     logger.info(f"Processing photo input for user {message.from_user.id}")
     
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    nickname = data.get("group_nickname")
-    user_tg = message.from_user
-    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-    
-    logger.info(f"Processing photo for group {group_id}, user {user_tg.id}, nickname '{nickname}'")
-    
-    # Determine photo_file_id
-    photo_file_id = None
-    if message.photo:
-        photo_file_id = message.photo[-1].file_id
-        logger.info(f"Got photo with file_id: {photo_file_id}")
-    elif message.text and message.text.strip().lower() == "/skip":
-        logger.info(f"User skipped photo upload")
-        photo_file_id = None
-    else:
-        logger.info(f"Invalid photo input: {message.content_type}")
-        await message.answer("Please send a photo or type /skip:")
-        return
-    
-    # Store nickname and photo in GroupMember
-    logger.info(f"Saving profile for user {db_user.id} in group {group_id}: nickname='{nickname}', has_photo={bool(photo_file_id)}")
     try:
-        await group_repo.set_member_profile(session, db_user.id, group_id, nickname, photo_file_id)
-        await session.commit()  # Explicitly commit to ensure the profile is saved
-        logger.info(f"Profile saved successfully")
+        data = await state.get_data()
+        group_id = data.get("current_group_id")
+        nickname = data.get("group_nickname")
+        
+        if not group_id:
+            logger.error(f"Missing group_id in state data: {data}")
+            await message.answer("Error: Could not determine your current group. Please try /start again.")
+            return
+            
+        if not nickname:
+            logger.error(f"Missing nickname in state data: {data}")
+            await message.answer("Error: Nickname is missing. Please try /start again.")
+            return
+        
+        user_tg = message.from_user
+        db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+        if not db_user:
+            logger.error(f"User with Telegram ID {user_tg.id} not found in database")
+            await message.answer("Error: Your user account was not found. Please try /start again.")
+            return
+        
+        logger.info(f"Processing photo for group {group_id}, user {user_tg.id}, nickname '{nickname}'")
+        
+        # Determine photo_file_id
+        photo_file_id = None
+        if message.photo:
+            photo_file_id = message.photo[-1].file_id
+            logger.info(f"Got photo with file_id: {photo_file_id}")
+        elif message.text and message.text.strip().lower() == "/skip":
+            logger.info(f"User skipped photo upload")
+            photo_file_id = None
+        else:
+            logger.warning(f"Invalid photo input: {message.content_type}")
+            await message.answer("Please send a photo or type /skip:")
+            return
+        
+        # Store nickname and photo in GroupMember
+        logger.info(f"Saving profile for user {db_user.id} in group {group_id}: nickname='{nickname}', has_photo={bool(photo_file_id)}")
+        try:
+            await group_repo.set_member_profile(session, db_user.id, group_id, nickname, photo_file_id)
+            await session.commit()  # Explicitly commit to ensure the profile is saved
+            logger.info(f"Profile saved successfully")
+        except Exception as e:
+            logger.exception(f"Error saving profile: {e}")
+            await message.answer("Error saving your profile. Please try again or contact support.")
+            await session.rollback()
+            return
+        
+        # Get group details
+        try:
+            group = await group_repo.get(session, group_id)
+            if not group:
+                logger.error(f"Group with ID {group_id} not found after setting profile")
+                await message.answer("Error: Could not find your group. Please try /start again.")
+                return
+        except Exception as e:
+            logger.exception(f"Error retrieving group {group_id}: {e}")
+            await message.answer("Error retrieving group details. Please try again.")
+            return
+        
+        # Onboarding complete, proceed to group content
+        logger.info(f"Onboarding complete, proceeding to group content")
+        await state.set_state(QuestionFlow.viewing_question)
+        
+        # Success message with welcome to the group
+        welcome_text = f"🎉 You're all set! Welcome to <b>{group.name}</b>!"
+        
+        # Get user's points balance
+        points = db_user.points if hasattr(db_user, 'points') else 0
+        
+        # Get the reply keyboard with points balance 
+        try:
+            reply_keyboard = get_group_menu_reply_keyboard(current_section="questions", balance=points)
+            logger.info(f"Created reply keyboard for user with {points} points")
+        except Exception as e:
+            logger.exception(f"Error creating keyboard: {e}")
+            # Fallback to a simple keyboard
+            reply_keyboard = types.ReplyKeyboardMarkup(
+                keyboard=[
+                    [types.KeyboardButton(text="💬 Questions"), types.KeyboardButton(text="💞 Find Match")],
+                    [types.KeyboardButton(text="➕ Add Question"), types.KeyboardButton(text="ℹ️ Group Info")],
+                    [types.KeyboardButton(text="🏠 Start Menu")]
+                ],
+                resize_keyboard=True
+            )
+        
+        # Send welcome message with menu buttons
+        try:
+            await message.answer(welcome_text, reply_markup=reply_keyboard, parse_mode="HTML")
+            logger.info(f"Sent welcome message to user {user_tg.id}")
+        except Exception as e:
+            logger.exception(f"Error sending welcome message: {e}")
+            await message.answer("Welcome to the group! Use the commands to navigate.")
+            return
+        
+        # Get count of unanswered questions
+        try:
+            unanswered_count = await get_unanswered_question_count(session, db_user.id, group_id)
+            logger.info(f"User has {unanswered_count} unanswered questions")
+            
+            # Get count of answered questions
+            answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+            answered_count = len(answers)
+            logger.info(f"User has answered {answered_count} questions")
+            
+            # Add message about questions
+            if unanswered_count > 0:
+                await message.answer(f"You have {unanswered_count} questions to answer. Here's the first one:")
+                # Display the first question (which won't trigger onboarding again)
+                await check_and_display_next_question(message, db_user, group_id, state, session)
+            else:
+                await message.answer("You've answered all available questions in this group!")
+        except Exception as e:
+            logger.exception(f"Error getting questions count: {e}")
+            await message.answer("Error getting questions. Please use the Questions button to view questions.")
     except Exception as e:
-        logger.error(f"Error saving profile: {e}")
-        await message.answer("Error saving your profile. Please try again or contact support.")
-        return
-    
-    # Get group details
-    group = await group_repo.get(session, group_id)
-    
-    # Onboarding complete, proceed to group content
-    logger.info(f"Onboarding complete, proceeding to group content")
-    await state.set_state(QuestionFlow.viewing_question)
-    
-    # Success message with welcome to the group
-    welcome_text = f"🎉 You're all set! Welcome to <b>{group.name}</b>!"
-    
-    # Get user's points balance
-    points = db_user.points if hasattr(db_user, 'points') else 0
-    
-    # Get the reply keyboard with points balance 
-    reply_keyboard = get_group_menu_reply_keyboard(current_section="questions", balance=points)
-    
-    # Send welcome message with menu buttons
-    await message.answer(welcome_text, reply_markup=reply_keyboard, parse_mode="HTML")
-    
-    # Get count of unanswered questions
-    unanswered_count = await get_unanswered_question_count(session, db_user.id, group_id)
-    
-    # Get count of answered questions
-    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
-    answered_count = len(answers)
-    
-    # Add message about questions
-    if unanswered_count > 0:
-        await message.answer(f"You have {unanswered_count} questions to answer. Here's the first one:")
-        # Display the first question (which won't trigger onboarding again)
-        await check_and_display_next_question(message, db_user, group_id, state, session)
-    else:
-        await message.answer("You've answered all available questions in this group!")
+        logger.exception(f"Unhandled error in process_group_photo: {e}")
+        await message.answer("An unexpected error occurred. Please try /start to restart the bot.")
 
 
 async def on_delete_question_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
