@@ -1,101 +1,76 @@
-from typing import Callable, Dict, Any, Awaitable
-import asyncio
+from typing import Any, Awaitable, Callable, Dict, Union, Tuple, Optional, TypeVar, cast
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+import logging
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+from aiogram.types import TelegramObject, Message, CallbackQuery, Update
+from aiogram.dispatcher.flags import get_flag
 from loguru import logger
 
-class DbSessionMiddleware(BaseMiddleware):
-    """Middleware to inject SQLAlchemy AsyncSession into handlers."""
-    def __init__(self, session_pool: async_sessionmaker[AsyncSession]):
-        super().__init__()
-        # Add type checking to catch errors early
-        if not isinstance(session_pool, async_sessionmaker):
-            logger.error(f"DbSessionMiddleware received incorrect type: {type(session_pool)}. Expected async_sessionmaker.")
-            logger.error("This will cause 'AsyncSession object is not callable' errors.")
-            raise TypeError(f"session_pool must be async_sessionmaker, got {type(session_pool)}")
-        self.session_pool = session_pool
-        logger.info("DbSessionMiddleware initialized.")
+# Type alias for handler
+Handler = Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]]
+SessionPool = async_sessionmaker[AsyncSession]  # Type annotation for the session pool
 
+class DbSessionMiddleware(BaseMiddleware):
+    """Middleware to provide database session to handlers."""
+    
+    def __init__(self, session_pool: SessionPool):
+        """Initialize middleware with session pool.
+        
+        Args:
+            session_pool: SQLAlchemy async session factory
+        """
+        if not isinstance(session_pool, async_sessionmaker):
+            logger.critical(
+                f"DbSessionMiddleware expects async_sessionmaker as session_pool, got {type(session_pool)}"
+            )
+            raise TypeError("session_pool must be an async_sessionmaker instance")
+            
+        self.session_pool = session_pool
+        logger.info("DbSessionMiddleware initialized with session pool")
+    
     async def __call__(
         self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        handler: Handler,
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        """Execute middleware."""
-        logger.debug(f"DbSessionMiddleware entering __call__ for update type: {type(event)}")
-        session = None
+        """Provide database session to handler.
+        
+        This creates a new session for each request and closes it after the handler is done.
+        The session is passed to the handler as a parameter.
+        """
+        if get_flag(data, "skip_db"):
+            # Skip DB session creation if flag is set
+            logger.debug("Skipping DB session creation due to flag")
+            return await handler(event, data)
+        
+        # Create a new database session
         try:
-            # Verify event loop is running
-            if not asyncio.get_event_loop().is_running():
-                logger.error("Event loop is not running, this should never happen!")
-                return await handler(event, data)  # Continue without DB session
-                
-            # Create a new session from the factory
-            logger.debug("Attempting to acquire session from pool...")
             session = self.session_pool()
-            logger.debug(f"Database session {id(session)} acquired.")
+            logger.debug(f"Created new database session for {type(event).__name__}")
             
-            # Add the session to the data dictionary
+            # Add session to handler data
             data["session"] = session
-            
-            # Start a new transaction
-            async with session:
-                logger.debug("Calling next handler within session context...")
-                try:
-                    result = await handler(event, data)
-                    logger.debug("Next handler finished.")
-                    return result
-                except Exception as handler_exc:
-                    logger.exception(f"Handler raised exception: {handler_exc}")
-                    # Let the session context manager handle rollback
-                    raise
-        except asyncio.CancelledError:
-            logger.warning("Operation cancelled during middleware execution")
-            # Don't try to clean up, just propagate the cancellation
-            raise
+
+            try:
+                # Call the handler with the session
+                result = await handler(event, data)
+                # Commit the session if needed (if not already committed by the handler)
+                if session.is_active:
+                    logger.debug("Committing session after handler execution")
+                    await session.commit()
+                return result
+            except Exception as e:
+                # Rollback the session in case of error
+                if session.is_active:
+                    logger.warning(f"Rolling back session due to error: {e}")
+                    await session.rollback()
+                raise
+            finally:
+                # Close the session
+                logger.debug("Closing database session")
+                await session.close()
         except Exception as e:
-            # Check specifically for "Event loop is closed" error
-            if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
-                logger.error("Event loop is closed error in DB middleware, cannot clean up properly")
-                # Can't do async operations if event loop is closed
-                if session:
-                    # Try synchronous cleanup using _proxied
-                    try:
-                        session._proxied.close()  # pylint: disable=protected-access
-                        logger.info("Used synchronous close on session after event loop closed")
-                    except Exception as close_exc:
-                        logger.error(f"Failed synchronous session cleanup: {close_exc}")
-            else:
-                logger.exception(f"DbSessionMiddleware caught an exception: {e}")
-                # Ensure session is rolled back if acquired and an error occurred
-                if session:
-                    try:
-                        await session.rollback()
-                        logger.warning("Session rolled back due to exception in handler or middleware.")
-                    except Exception as rollback_exc:
-                        logger.error(f"Failed to rollback session during exception handling: {rollback_exc}")
-            raise  # Re-raise the exception after logging
-        finally:
-            # Explicitly close the session if it was created
-            if session:
-                try:
-                    # Only attempt to close if event loop is running
-                    if asyncio.get_running_loop().is_running():
-                        await session.close()
-                        logger.debug(f"Session {id(session)} explicitly closed.")
-                except RuntimeError as runtime_err:
-                    if "no running event loop" in str(runtime_err) or "Event loop is closed" in str(runtime_err):
-                        logger.warning("Could not close session asynchronously: event loop not available")
-                        # Try synchronous close as a fallback
-                        try:
-                            session._proxied.close()  # pylint: disable=protected-access
-                            logger.info("Used synchronous close as fallback")
-                        except Exception as sync_close_exc:
-                            logger.error(f"Failed synchronous session close fallback: {sync_close_exc}")
-                    else:
-                        logger.error(f"Runtime error in session cleanup: {runtime_err}")
-                except Exception as close_exc:
-                    logger.error(f"Failed to close session: {close_exc}")
-            logger.debug(f"DbSessionMiddleware exiting __call__.") 
+            logger.error(f"Error in DB middleware: {e}")
+            # Let the error propagate but log it
+            raise 

@@ -1050,8 +1050,17 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
     If text is None, will use a welcome message instead of trying to use invisible characters.
     """
     try:
+        logger.info(f"Showing group menu for user {message.from_user.id}, group {group_id} ({group_name}), section {current_section}")
+        
+        # Ensure we have valid parameters
+        if not group_id or not group_name:
+            logger.error(f"Invalid parameters for show_group_menu: group_id={group_id}, group_name={group_name}")
+            await message.answer("Error: Invalid group information. Please use /start to try again.")
+            return
+        
         # Update state with group info
         await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        logger.info(f"Updated state with group_id={group_id}, group_name={group_name}")
         
         # Set the viewing_question state to enable direct question entry
         current_state = await state.get_state()
@@ -1063,15 +1072,24 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
         points = 0
         points_text = ""
         if session:
-            user_tg = message.from_user
-            db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-            if db_user:
-                points = db_user.points
-                points_text = f"Your balance: 💎 {points} points"
+            try:
+                user_tg = message.from_user
+                db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+                if db_user:
+                    points = db_user.points
+                    points_text = f"Your balance: 💎 {points} points"
+                    logger.info(f"Retrieved user points: {points}")
+                else:
+                    logger.warning(f"User {user_tg.id} not found in database when showing group menu")
+            except Exception as e:
+                logger.exception(f"Error retrieving user points: {e}")
+        else:
+            logger.warning("No session provided to show_group_menu, skipping points retrieval")
         
         # Get the reply keyboard with points balance
         try:
             keyboard = get_group_menu_reply_keyboard(current_section, balance=points)
+            logger.debug(f"Created keyboard for section {current_section} with points {points}")
         except Exception as keyboard_error:
             logger.error(f"Error creating keyboard: {keyboard_error}")
             # Fallback to a simple keyboard
@@ -1083,6 +1101,7 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
                 ],
                 resize_keyboard=True
             )
+            logger.info("Using fallback keyboard due to error")
         
         # Always use visible text - no more invisible characters
         if text is None:
@@ -1095,19 +1114,27 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
             elif current_section == "group_info":
                 display_text = f"ℹ️ Information about {group_name}"
             else:
-                display_text = f"🏡 Welcome to {group_name}"
+                # Default section - just show points, no welcome message
                 if points_text:
-                    display_text += f"\n{points_text}"
+                    display_text = points_text
+                else:
+                    display_text = "・" # Minimal text character that Telegram accepts
         else:
             display_text = text
+            
+        logger.info(f"Using display text: '{display_text}'")
 
         # Try editing the previous menu message if possible
         data = await state.get_data()
         prev_menu_msg_id = data.get("group_menu_msg_id")
-        if prev_menu_msg_id and isinstance(message, types.CallbackQuery): # Only edit on callbacks
+        is_callback = isinstance(message, types.CallbackQuery)
+        
+        if prev_menu_msg_id and is_callback: # Only edit on callbacks
             try:
+                logger.info(f"Attempting to edit previous menu message {prev_menu_msg_id}")
                 await message.message.edit_text(display_text, reply_markup=keyboard, parse_mode="HTML")
                 await state.update_data(group_menu_msg_id=message.message.message_id) # Update stored ID
+                logger.info(f"Successfully edited menu message {prev_menu_msg_id}")
                 return # Edited successfully, no need to send new message
             except Exception as edit_err:
                 logger.warning(f"Could not edit previous menu message {prev_menu_msg_id}: {edit_err}")
@@ -1115,6 +1142,7 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
 
         # If editing failed or not applicable, send a new message
         try:
+            logger.info("Sending new menu message")
             menu_msg = await message.answer(display_text, reply_markup=keyboard, parse_mode="HTML")
             await state.update_data(group_menu_msg_id=menu_msg.message_id)
             logger.info(f"Sent new menu message with ID: {menu_msg.message_id}")
@@ -1122,10 +1150,15 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
             logger.error(f"Error sending menu message: {answer_error}")
             # Last resort fallback - just show a plain text message
             await message.answer(f"Welcome to {group_name}. Use the commands to navigate.")
+            logger.info("Sent fallback plain text message")
     except Exception as e:
         logger.error(f"Error in show_group_menu: {e}")
         logger.exception("Full traceback for group menu error:")
-        raise  # Re-raise the exception to be caught by the calling function
+        # Send a fallback message even if there's an error
+        try:
+            await message.answer(f"Error showing menu for {group_name}. Please try /start to restart.")
+        except:
+            pass
 
 
 async def on_join_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -3208,20 +3241,38 @@ def register_handlers(dp: Dispatcher) -> None:
     # Fix for join_group button - handle both the plain and parameterized versions
     dp.callback_query.register(on_join_group_callback, F.data.startswith("join_group:"))
     dp.callback_query.register(on_join_group_callback, F.data == "join_group")
+    
+    # Ensure go_to_group is registered with high priority
+    logger.info("Registering go_to_group handler")
     dp.callback_query.register(on_go_to_group, F.data.startswith("go_to_group:"))
     
     # Chat handlers
     dp.callback_query.register(on_start_anon_chat, F.data.startswith("start_anon_chat:"))
     dp.callback_query.register(handle_cancel_match, F.data == "cancel_match")
     
-    # Group Management
+    # Group Management - log each handler registration
+    logger.info("Registering leave_group handler")
     dp.callback_query.register(on_leave_group_callback, F.data.startswith("leave_group:"))
+    
+    logger.info("Registering confirm_leave handler")
     dp.callback_query.register(on_confirm_leave_group, F.data.startswith("confirm_leave:"))
+    
+    logger.info("Registering cancel_leave handler")
     dp.callback_query.register(on_cancel_leave_group, F.data == "cancel_leave")
+    
+    logger.info("Registering manage_group handler")
     dp.callback_query.register(on_manage_group_callback, F.data.startswith("manage_group:"))
+    
+    logger.info("Registering group_rename handler")
     dp.callback_query.register(on_group_rename, F.data.startswith("group_rename:"))
+    
+    logger.info("Registering group_edit_description handler")
     dp.callback_query.register(on_group_edit_description, F.data.startswith("group_edit_desc:"))
+    
+    logger.info("Registering group_delete handler")
     dp.callback_query.register(on_group_delete, F.data.startswith("group_delete:"))
+    
+    logger.info("Registering confirm_group_delete handler")
     dp.callback_query.register(on_confirm_group_delete, F.data.startswith("confirm_group_delete:"))
     
     # Message handlers for group management
@@ -3432,98 +3483,106 @@ async def delete_user_answers_in_group(session: AsyncSession, user_id: int, grou
 async def on_go_to_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle go to group button click."""
     logger.info(f"Entering on_go_to_group handler for user {callback.from_user.id}")
-    await callback.answer()
     
-    # Extract group ID from callback data
     try:
-        callback_data = callback.data
-        parts = callback_data.split(":")
-        if len(parts) < 2:
-            logger.error(f"Invalid callback data format: {callback_data}")
-            await callback.message.answer("Error: Invalid callback data format. Please try again.")
-            return
-            
-        group_id = int(parts[1])
-        logger.info(f"Extracted group_id={group_id} from callback data")
-    except (ValueError, IndexError) as e:
-        logger.error(f"Error parsing callback data '{callback.data}': {e}")
-        await callback.message.answer("Error: Invalid team ID. Please try again.")
-        return
-    
-    # Get group details
-    try:
-        group = await group_repo.get(session, group_id)
-        if not group:
-            logger.error(f"Group with ID {group_id} not found in database")
-            await callback.message.answer("Error: Team not found. Please try again.")
-            return
+        await callback.answer()
         
-        logger.info(f"Found group: id={group.id}, name={group.name}, creator_id={group.creator_id}")
-    except Exception as e:
-        logger.exception(f"Error retrieving group with ID {group_id}: {e}")
-        await callback.message.answer("Error retrieving team details. Please try again.")
-        return
-    
-    # Get user data
-    user_tg = callback.from_user
-    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-    if not db_user:
-        logger.error(f"User with Telegram ID {user_tg.id} not found in database")
-        await callback.message.answer("Error: Your user account was not found. Please try /start again.")
-        return
-    
-    logger.info(f"Found user: id={db_user.id}, telegram_id={user_tg.id}")
-        
-    # Check if user is a member of this group
-    is_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
-    if not is_member:
-        logger.warning(f"User {db_user.id} is not a member of group {group_id}, adding them...")
+        # Extract group ID from callback data
         try:
-            # Determine if they should be a creator or regular member
-            role = MemberRole.MEMBER
-            if group.creator_id == db_user.id:
-                role = MemberRole.CREATOR
-                logger.info(f"User {db_user.id} is the creator of group {group_id}, assigning CREATOR role")
-            
-            # Add them to the group
-            await group_repo.add_user_to_group(session, db_user.id, group_id, role=role)
-            logger.info(f"Added user {db_user.id} to group {group_id} with role {role}")
-            await session.commit()
-        except Exception as e:
-            logger.exception(f"Error adding user {db_user.id} to group {group_id}: {e}")
-            await callback.message.answer("Error joining the team. Please try again.")
+            callback_data = callback.data
+            parts = callback_data.split(":")
+            if len(parts) < 2:
+                logger.error(f"Invalid callback data format: {callback_data}")
+                await callback.message.answer("Error: Invalid callback data format. Please try again.")
+                return
+                
+            group_id = int(parts[1])
+            logger.info(f"Extracted group_id={group_id} from callback data")
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing callback data '{callback.data}': {e}")
+            await callback.message.answer("Error: Invalid team ID. Please try again.")
             return
-    
-    # Update state with group info
-    await state.update_data(current_group_id=group_id, current_group_name=group.name, current_db_user_id=db_user.id)
-    await state.set_state(QuestionFlow.viewing_question)
-    
-    # Log the action
-    logger.info(f"User {callback.from_user.id} (DB ID: {db_user.id}) clicked Go to group button for group {group_id} ({group.name})")
-    
-    # Edit the original message to avoid having too many messages
-    try:
-        success_text = f"🎉 You're now in <b>{group.name}</b>!"
-        await callback.message.edit_text(success_text, parse_mode="HTML")
+        
+        # Get group details
+        try:
+            group = await group_repo.get(session, group_id)
+            if not group:
+                logger.error(f"Group with ID {group_id} not found in database")
+                await callback.message.answer("Error: Team not found. Please try again.")
+                return
+            
+            logger.info(f"Found group: id={group.id}, name={group.name}, creator_id={group.creator_id}")
+        except Exception as e:
+            logger.exception(f"Error retrieving group with ID {group_id}: {e}")
+            await callback.message.answer("Error retrieving team details. Please try again.")
+            return
+        
+        # Get user data
+        user_tg = callback.from_user
+        db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+        if not db_user:
+            logger.error(f"User with Telegram ID {user_tg.id} not found in database")
+            await callback.message.answer("Error: Your user account was not found. Please try /start again.")
+            return
+        
+        logger.info(f"Found user: id={db_user.id}, telegram_id={user_tg.id}")
+            
+        # Check if user is a member of this group
+        is_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
+        if not is_member:
+            logger.warning(f"User {db_user.id} is not a member of group {group_id}, adding them...")
+            try:
+                # Determine if they should be a creator or regular member
+                role = MemberRole.MEMBER
+                if group.creator_id == db_user.id:
+                    role = MemberRole.CREATOR
+                    logger.info(f"User {db_user.id} is the creator of group {group_id}, assigning CREATOR role")
+                
+                # Add them to the group
+                await group_repo.add_user_to_group(session, db_user.id, group_id, role=role)
+                logger.info(f"Added user {db_user.id} to group {group_id} with role {role}")
+                await session.commit()
+            except Exception as e:
+                logger.exception(f"Error adding user {db_user.id} to group {group_id}: {e}")
+                await callback.message.answer("Error joining the team. Please try again.")
+                return
+        
+        # Update state with group info
+        await state.update_data(current_group_id=group_id, current_group_name=group.name, current_db_user_id=db_user.id)
+        await state.set_state(QuestionFlow.viewing_question)
+        
+        # Log the action
+        logger.info(f"User {callback.from_user.id} (DB ID: {db_user.id}) clicked Go to group button for group {group_id} ({group.name})")
+        
+        # Edit the original message to avoid having too many messages
+        try:
+            success_text = f"🎉 You're now in <b>{group.name}</b>!"
+            await callback.message.edit_text(success_text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
+            # If editing fails, send a new message
+            await callback.message.answer(f"🎉 You're now in <b>{group.name}</b>!", parse_mode="HTML")
+        
+        # Show the group menu - put this in a try/except block
+        try:
+            await show_group_menu(callback.message, group_id, group.name, state, session=session)
+        except Exception as e:
+            logger.exception(f"Error showing group menu: {e}")
+            await callback.message.answer("Error showing group menu. Please try again.")
+            return
+        
+        # After showing the menu, trigger the questions view
+        try:
+            await on_show_questions(callback.message, state, session)
+        except Exception as e:
+            logger.exception(f"Error showing questions: {e}")
+            await callback.message.answer("Error loading questions. Please try again.")
     except Exception as e:
-        logger.error(f"Error editing message: {e}")
-        # If editing fails, send a new message
-        await callback.message.answer(f"🎉 You're now in <b>{group.name}</b>!", parse_mode="HTML")
-    
-    # Show the group menu
-    try:
-        await show_group_menu(callback.message, group_id, group.name, state, session=session)
-    except Exception as e:
-        logger.exception(f"Error showing group menu: {e}")
-        await callback.message.answer("Error showing group menu. Please try again.")
-        return
-    
-    # After showing the menu, trigger the questions view
-    try:
-        await on_show_questions(callback.message, state, session)
-    except Exception as e:
-        logger.exception(f"Error showing questions: {e}")
-        await callback.message.answer("Error loading questions. Please try again.")
+        logger.exception(f"Unhandled error in on_go_to_group: {e}")
+        try:
+            await callback.message.answer("An unexpected error occurred. Please try /start to restart the bot.")
+        except:
+            pass
 
 
 async def on_answer_error(callback: types.CallbackQuery, chat_id: int) -> None:
@@ -3718,32 +3777,66 @@ async def on_delete_question_callback(callback: types.CallbackQuery, state: FSMC
 
 async def on_leave_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle when user wants to leave a group."""
-    await callback.answer()
+    logger.info(f"Entering on_leave_group_callback for user {callback.from_user.id}")
     
-    # Extract group ID from callback data
-    parts = callback.data.split(":")
-    if len(parts) > 1:
-        group_id = int(parts[1])
-    else:
-        await callback.answer("Invalid group data", show_alert=True)
-        return
-    
-    # Get group details
-    group = await group_repo.get(session, group_id)
-    if not group:
-        await callback.answer("Group not found", show_alert=True)
-        return
-    
-    # Ask for confirmation
-    confirmation_text = f"Are you sure you want to leave <b>{group.name}</b>?\n\nYour answers will remain in the group's database, but you will no longer have access to the group."
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="✅ Yes, leave group", callback_data=f"confirm_leave:{group_id}"),
-            types.InlineKeyboardButton(text="❌ No, stay", callback_data="cancel_leave"),
-        ]
-    ])
-    
-    await callback.message.edit_text(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
+    try:
+        await callback.answer()
+        
+        # Extract group ID from callback data
+        try:
+            parts = callback.data.split(":")
+            if len(parts) > 1:
+                group_id = int(parts[1])
+                logger.info(f"Extracted group_id={group_id} from callback data")
+            else:
+                logger.error(f"Invalid callback data format: {callback.data}")
+                await callback.answer("Invalid group data", show_alert=True)
+                return
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing callback data '{callback.data}': {e}")
+            await callback.answer("Invalid group data format", show_alert=True)
+            return
+        
+        # Get group details
+        try:
+            group = await group_repo.get(session, group_id)
+            if not group:
+                logger.error(f"Group with ID {group_id} not found in database")
+                await callback.answer("Group not found", show_alert=True)
+                return
+            
+            logger.info(f"Found group: id={group.id}, name={group.name}")
+        except Exception as e:
+            logger.exception(f"Error retrieving group with ID {group_id}: {e}")
+            await callback.answer("Error retrieving group details", show_alert=True)
+            return
+        
+        # Ask for confirmation
+        confirmation_text = f"Are you sure you want to leave <b>{group.name}</b>?\n\nYour answers will remain in the group's database, but you will no longer have access to the group."
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text="✅ Yes, leave group", callback_data=f"confirm_leave:{group_id}"),
+                types.InlineKeyboardButton(text="❌ No, stay", callback_data="cancel_leave"),
+            ]
+        ])
+        
+        try:
+            await callback.message.edit_text(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
+            logger.info(f"Displayed leave confirmation for group {group_id} to user {callback.from_user.id}")
+        except Exception as e:
+            logger.exception(f"Error displaying leave confirmation: {e}")
+            # Try to send a new message if editing fails
+            try:
+                await callback.message.answer(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
+            except Exception as inner_e:
+                logger.exception(f"Error sending leave confirmation message: {inner_e}")
+                await callback.answer("Error displaying leave confirmation", show_alert=True)
+    except Exception as e:
+        logger.exception(f"Unhandled error in on_leave_group_callback: {e}")
+        try:
+            await callback.answer("An unexpected error occurred", show_alert=True)
+        except:
+            pass
 
 async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle confirmation to leave a group."""
@@ -3821,47 +3914,90 @@ async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext
 
 async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle group management actions."""
-    await callback.answer()
+    logger.info(f"Entering on_manage_group_callback for user {callback.from_user.id}")
     
-    # Extract group ID from callback data
-    parts = callback.data.split(":")
-    if len(parts) > 1:
-        group_id = int(parts[1])
-    else:
-        await callback.answer("Invalid group data", show_alert=True)
-        return
-    
-    # Get group details
-    group = await group_repo.get(session, group_id)
-    if not group:
-        await callback.answer("Group not found", show_alert=True)
-        return
-    
-    # Get user from DB
-    user_tg = callback.from_user
-    db_user, _ = await user_repo.get_or_create_user(session, {
-        "id": user_tg.id,
-        "first_name": user_tg.first_name,
-        "last_name": user_tg.last_name,
-        "username": user_tg.username
-    })
-    
-    # Check if user is a creator/admin of the group
-    is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
-    if not is_creator:
-        await callback.answer("You don't have permission to manage this group", show_alert=True)
-        return
-    
-    # Show management options
-    management_text = f"<b>{group.name}</b> Management\n\nWhat would you like to do?"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="✏️ Rename Group", callback_data=f"group_rename:{group_id}")],
-        [types.InlineKeyboardButton(text="📝 Edit Description", callback_data=f"group_edit_desc:{group_id}")],
-        [types.InlineKeyboardButton(text="❌ Delete Group", callback_data=f"group_delete:{group_id}")],
-        [types.InlineKeyboardButton(text="🔙 Back", callback_data=f"go_to_group:{group_id}")],
-    ])
-    
-    await callback.message.edit_text(management_text, reply_markup=keyboard, parse_mode="HTML")
+    try:
+        await callback.answer()
+        
+        # Extract group ID from callback data
+        try:
+            parts = callback.data.split(":")
+            if len(parts) > 1:
+                group_id = int(parts[1])
+                logger.info(f"Extracted group_id={group_id} from callback data")
+            else:
+                logger.error(f"Invalid callback data format: {callback.data}")
+                await callback.answer("Invalid group data", show_alert=True)
+                return
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing callback data '{callback.data}': {e}")
+            await callback.answer("Invalid group data format", show_alert=True)
+            return
+        
+        # Get group details
+        try:
+            group = await group_repo.get(session, group_id)
+            if not group:
+                logger.error(f"Group with ID {group_id} not found in database")
+                await callback.answer("Group not found", show_alert=True)
+                return
+            
+            logger.info(f"Found group: id={group.id}, name={group.name}")
+        except Exception as e:
+            logger.exception(f"Error retrieving group with ID {group_id}: {e}")
+            await callback.answer("Error retrieving group details", show_alert=True)
+            return
+        
+        # Get user from DB
+        try:
+            user_tg = callback.from_user
+            db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+            if not db_user:
+                logger.error(f"User with Telegram ID {user_tg.id} not found in database")
+                await callback.answer("Your user profile not found", show_alert=True)
+                return
+            
+            logger.info(f"Found user: id={db_user.id}, telegram_id={user_tg.id}")
+        except Exception as e:
+            logger.exception(f"Error retrieving user: {e}")
+            await callback.answer("Error retrieving user details", show_alert=True)
+            return
+        
+        # Check if user is a creator/admin of the group
+        try:
+            is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+            if not is_creator:
+                logger.warning(f"User {db_user.id} attempted to manage group {group_id} without permission")
+                await callback.answer("You don't have permission to manage this group", show_alert=True)
+                return
+            
+            logger.info(f"User {db_user.id} has permission to manage group {group_id}")
+        except Exception as e:
+            logger.exception(f"Error checking user permissions: {e}")
+            await callback.answer("Error checking permissions", show_alert=True)
+            return
+        
+        # Show management options
+        management_text = f"<b>{group.name}</b> Management\n\nWhat would you like to do?"
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="✏️ Rename Group", callback_data=f"group_rename:{group_id}")],
+            [types.InlineKeyboardButton(text="📝 Edit Description", callback_data=f"group_edit_desc:{group_id}")],
+            [types.InlineKeyboardButton(text="❌ Delete Group", callback_data=f"group_delete:{group_id}")],
+            [types.InlineKeyboardButton(text="🔙 Back", callback_data=f"go_to_group:{group_id}")],
+        ])
+        
+        try:
+            await callback.message.edit_text(management_text, reply_markup=keyboard, parse_mode="HTML")
+            logger.info(f"Displayed management options for group {group_id} to user {db_user.id}")
+        except Exception as e:
+            logger.exception(f"Error displaying management options: {e}")
+            await callback.answer("Error displaying management options", show_alert=True)
+    except Exception as e:
+        logger.exception(f"Unhandled error in on_manage_group_callback: {e}")
+        try:
+            await callback.answer("An unexpected error occurred", show_alert=True)
+        except:
+            pass
 
 
 async def on_group_rename(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -4721,24 +4857,70 @@ async def handle_add_question_message(message: types.Message, state: FSMContext,
 
 # Add this debugging helper function at the top of the file
 async def debug_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
-    """Debug handler for unhandled callbacks - logs and tells user which callback wasn't handled."""
-    logger.error(f"UNHANDLED CALLBACK: '{callback.data}' from user {callback.from_user.id}")
-    
-    # Log current state
-    current_state = await state.get_state()
-    logger.error(f"User state during unhandled callback: {current_state}")
-    
-    # Log state data
-    state_data = await state.get_data()
-    logger.error(f"State data: {state_data}")
-    
-    # Notify user - but only in development mode to avoid confusion
-    is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
-    if is_dev:
-        await callback.answer(f"Unhandled callback: {callback.data}", show_alert=True)
-    else:
-        await callback.answer("Processing...")
-
+    """Debug handler that catches all unhandled callback queries."""
+    try:
+        # Log the unhandled callback
+        logger.warning(f"Unhandled callback data: '{callback.data}' from user {callback.from_user.id}")
+        
+        # Log the state data
+        state_data = await state.get_data()
+        logger.warning(f"Current state data: {state_data}")
+        logger.warning(f"Current state: {await state.get_state()}")
+        
+        # Get user info
+        user_info = f"ID: {callback.from_user.id}, Username: @{callback.from_user.username}"
+        logger.warning(f"User info: {user_info}")
+        
+        # Get message info if present
+        if callback.message:
+            message_info = f"Chat ID: {callback.message.chat.id}, Message ID: {callback.message.message_id}"
+            if callback.message.text:
+                message_text = callback.message.text[:50] + ("..." if len(callback.message.text) > 50 else "")
+                message_info += f", Text: '{message_text}'"
+            logger.warning(f"Message info: {message_info}")
+        
+        # For group-related callbacks, try to extract the group ID
+        group_id = None
+        if ":" in callback.data:
+            parts = callback.data.split(":")
+            try:
+                group_id = int(parts[1])
+                logger.warning(f"Extracted potential group ID: {group_id}")
+            except (ValueError, IndexError):
+                pass
+        
+        # Check if this callback might be for a group action
+        if any(callback.data.startswith(prefix) for prefix in ["manage_group", "leave_group", "go_to_group"]):
+            logger.warning(f"This appears to be a group-related callback: {callback.data}")
+            
+            # If we have a session and group_id, try to get the group info
+            if session and group_id:
+                try:
+                    group = await group_repo.get(session, group_id)
+                    if group:
+                        logger.warning(f"Found group: id={group.id}, name={group.name}")
+                    else:
+                        logger.warning(f"Group with ID {group_id} not found in database")
+                except Exception as e:
+                    logger.exception(f"Error retrieving group info: {e}")
+        
+        # Acknowledge the callback to prevent the "loading" state
+        await callback.answer("This action is not currently available", show_alert=True)
+        
+        # If we're in a development environment, send a debug message
+        is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
+        if is_dev:
+            await callback.message.answer(
+                f"DEBUG: Unhandled callback '{callback.data}'\n"
+                f"State: {await state.get_state()}\n"
+                f"Please report this to the developers."
+            )
+    except Exception as e:
+        logger.exception(f"Error in debug callback handler: {e}")
+        try:
+            await callback.answer("An error occurred processing your request", show_alert=True)
+        except:
+            pass
 
 async def echo_debug_handler(message: types.Message, state: FSMContext) -> None:
     """Debug handler to echo text messages and log state."""
