@@ -4022,6 +4022,13 @@ async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext
 async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle group management actions."""
     logger.info(f"Entering on_manage_group_callback for user {callback.from_user.id}")
+    logger.info(f"Callback data: {callback.data}")
+    logger.info(f"Session type: {type(session)}")
+    
+    # Log all available callback properties for debugging
+    logger.debug(f"Callback properties: id={callback.id}, chat_instance={callback.chat_instance}")
+    if hasattr(callback, 'message') and callback.message:
+        logger.debug(f"Callback message: id={callback.message.message_id}, chat={callback.message.chat.id}")
     
     try:
         await callback.answer()
@@ -4034,11 +4041,11 @@ async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMCont
                 logger.info(f"Extracted group_id={group_id} from callback data")
             else:
                 logger.error(f"Invalid callback data format: {callback.data}")
-                await callback.answer("Invalid group data", show_alert=True)
+                await callback.message.answer("Invalid group data - please try again")
                 return
         except (ValueError, IndexError) as e:
             logger.error(f"Error parsing callback data '{callback.data}': {e}")
-            await callback.answer("Invalid group data format", show_alert=True)
+            await callback.message.answer("Invalid group data format - please try again")
             return
         
         # Get group details
@@ -4046,13 +4053,13 @@ async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMCont
             group = await group_repo.get(session, group_id)
             if not group:
                 logger.error(f"Group with ID {group_id} not found in database")
-                await callback.answer("Group not found", show_alert=True)
+                await callback.message.answer("Group not found. Please try selecting your group again.")
                 return
             
             logger.info(f"Found group: id={group.id}, name={group.name}")
         except Exception as e:
             logger.exception(f"Error retrieving group with ID {group_id}: {e}")
-            await callback.answer("Error retrieving group details", show_alert=True)
+            await callback.message.answer("Error retrieving group details. Please try again later.")
             return
         
         # Get user from DB
@@ -4061,27 +4068,33 @@ async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMCont
             db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
             if not db_user:
                 logger.error(f"User with Telegram ID {user_tg.id} not found in database")
-                await callback.answer("Your user profile not found", show_alert=True)
+                await callback.message.answer("Your user profile was not found. Please try /start to restart.")
                 return
             
             logger.info(f"Found user: id={db_user.id}, telegram_id={user_tg.id}")
         except Exception as e:
             logger.exception(f"Error retrieving user: {e}")
-            await callback.answer("Error retrieving user details", show_alert=True)
+            await callback.message.answer("Error retrieving user profile. Please try again later.")
             return
         
         # Check if user is a creator/admin of the group
         try:
             is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
+            # Fallback check for admin role if not creator
             if not is_creator:
-                logger.warning(f"User {db_user.id} attempted to manage group {group_id} without permission")
-                await callback.answer("You don't have permission to manage this group", show_alert=True)
-                return
+                role = await group_repo.get_user_role(session, db_user.id, group_id)
+                is_admin = role in ["admin", "creator"]
+                logger.info(f"User {db_user.id} has role {role} in group {group_id}")
+                
+                if not is_admin:
+                    logger.warning(f"User {db_user.id} attempted to manage group {group_id} without permission")
+                    await callback.message.answer("You don't have permission to manage this group.")
+                    return
             
             logger.info(f"User {db_user.id} has permission to manage group {group_id}")
         except Exception as e:
             logger.exception(f"Error checking user permissions: {e}")
-            await callback.answer("Error checking permissions", show_alert=True)
+            await callback.message.answer("Error checking permissions. Please try again later.")
             return
         
         # Show management options
@@ -4094,15 +4107,40 @@ async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMCont
         ])
         
         try:
-            await callback.message.edit_text(management_text, reply_markup=keyboard, parse_mode="HTML")
+            # Try to edit the message if possible
+            if hasattr(callback, 'message') and callback.message:
+                await callback.message.edit_text(management_text, reply_markup=keyboard, parse_mode="HTML")
+                logger.info(f"Edited message to display management options for group {group_id}")
+            else:
+                # If we can't edit, send a new message
+                logger.warning("Could not edit message, sending new one instead")
+                await callback.bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=management_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                logger.info(f"Sent new message with management options for group {group_id}")
+            
             logger.info(f"Displayed management options for group {group_id} to user {db_user.id}")
         except Exception as e:
             logger.exception(f"Error displaying management options: {e}")
-            await callback.answer("Error displaying management options", show_alert=True)
+            # Try sending a new message if editing failed
+            try:
+                await callback.bot.send_message(
+                    chat_id=callback.from_user.id,
+                    text=management_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                logger.info("Sent new message after edit failure")
+            except Exception as send_error:
+                logger.exception(f"Also failed to send new message: {send_error}")
+                await callback.message.answer("Error displaying management options. Please try again.")
     except Exception as e:
         logger.exception(f"Unhandled error in on_manage_group_callback: {e}")
         try:
-            await callback.answer("An unexpected error occurred", show_alert=True)
+            await callback.message.answer("An unexpected error occurred. Please try again later.")
         except:
             pass
 
