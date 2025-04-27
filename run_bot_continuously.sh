@@ -72,6 +72,58 @@ else
   curl -s "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true" > /dev/null
 fi
 
+# Validate database connection in production
+if [[ "${RAILWAY_ENVIRONMENT}" == "production" ]]; then
+  log "Validating database connection in production environment..."
+  if [[ -z "${DATABASE_URL}" ]]; then
+    log "ERROR: DATABASE_URL environment variable is not set!"
+    log "Please set DATABASE_URL to the PostgreSQL connection string."
+    exit 1
+  fi
+  
+  if [[ ! "${DATABASE_URL}" =~ ^(postgresql|postgres) ]]; then
+    log "ERROR: DATABASE_URL must be a PostgreSQL connection!"
+    log "Current DATABASE_URL starts with: ${DATABASE_URL:0:15}..."
+    exit 1
+  fi
+  
+  log "DATABASE_URL validation passed (PostgreSQL connection detected)"
+  
+  # Test database connection using Python
+  log "Testing database connection..."
+  DB_TEST_RESULT=$(python3 -c "
+import asyncio, sys
+from sqlalchemy.ext.asyncio import create_async_engine
+async def test_db():
+  try:
+    print('Testing PostgreSQL connection...')
+    engine = create_async_engine('${DATABASE_URL}'.replace('postgres://', 'postgresql+asyncpg://'))
+    async with engine.connect() as conn:
+      result = await conn.execute('SELECT 1')
+      return True
+  except Exception as e:
+    print(f'Database connection error: {e}')
+    return False
+if asyncio.run(test_db()):
+  print('Database connection successful!')
+  sys.exit(0)
+else:
+  print('Failed to connect to database')
+  sys.exit(1)
+" 2>&1)
+  DB_TEST_EXIT=$?
+  
+  log "Database test result: ${DB_TEST_RESULT}"
+  if [[ $DB_TEST_EXIT -ne 0 ]]; then
+    log "ERROR: Failed to connect to PostgreSQL database!"
+    exit 1
+  fi
+  
+  log "PostgreSQL database connection verified"
+else
+  log "Running in development mode with local database"
+fi
+
 # Start the bot
 run_bot() {
   log "Starting the bot process..."

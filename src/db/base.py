@@ -5,10 +5,14 @@ import os
 import urllib.parse
 from loguru import logger
 import re
+import sys
 
 from src.core.config import get_settings
 
 settings = get_settings()
+
+# Check if we're in production 
+IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
 
 # Prioritize Railway's DATABASE_URL environment variable
 ORIGINAL_DB_URL = os.getenv('DATABASE_URL', settings.db_url)
@@ -17,15 +21,33 @@ logger.info(f"Original database URL type: {type(ORIGINAL_DB_URL)}")
 # Function to safely process database URL
 def process_database_url(url):
     if not url:
-        logger.warning("No database URL provided, falling back to SQLite")
-        return "sqlite+aiosqlite:///./allkinds.db"
+        # In production, never fall back to SQLite
+        if IS_PRODUCTION:
+            logger.error("No database URL provided in production environment!")
+            logger.error("DATABASE_URL environment variable must be set to a PostgreSQL URL in production.")
+            sys.exit(1)
+        else:
+            logger.warning("No database URL provided, falling back to SQLite")
+            return "sqlite+aiosqlite:///./allkinds.db"
     
     logger.info(f"Processing database URL (starts with): {url[:15]}...")
     
+    # In production, enforce PostgreSQL
+    if IS_PRODUCTION and not (url.startswith('postgres://') or url.startswith('postgresql://')):
+        logger.error(f"Invalid database URL in production: {url[:15]}...")
+        logger.error("DATABASE_URL must be a PostgreSQL connection in production environment.")
+        sys.exit(1)
+    
     # Handle SQLite explicitly
     if url.startswith('sqlite'):
-        logger.info("Using SQLite database")
-        return url
+        # In production, never use SQLite
+        if IS_PRODUCTION:
+            logger.error("SQLite database not allowed in production environment!")
+            logger.error("DATABASE_URL must be a PostgreSQL connection in production.")
+            sys.exit(1)
+        else:
+            logger.info("Using SQLite database")
+            return url
     
     # Parse the URL to handle parameters safely
     try:
@@ -43,9 +65,23 @@ def process_database_url(url):
             return url
             
         logger.warning(f"Unrecognized database URL format: {url[:10]}...")
+        
+        # In production, don't allow unrecognized formats
+        if IS_PRODUCTION:
+            logger.error("Unrecognized database URL format in production!")
+            logger.error("DATABASE_URL must be a PostgreSQL connection in production.")
+            sys.exit(1)
+            
         return url
     except Exception as e:
         logger.error(f"Error processing database URL: {e}")
+        
+        # In production, don't fall back to SQLite on errors
+        if IS_PRODUCTION:
+            logger.error("Failed to process database URL in production!")
+            logger.error("Please fix the DATABASE_URL environment variable.")
+            sys.exit(1)
+            
         logger.info("Falling back to SQLite database")
         return "sqlite+aiosqlite:///./allkinds.db"
 
@@ -119,6 +155,12 @@ def get_async_engine(database_url=None):
         # Create a new engine with the specified URL
         from sqlalchemy.ext.asyncio import create_async_engine
         
+        # In production, enforce PostgreSQL
+        if IS_PRODUCTION and not (database_url.startswith('postgres://') or database_url.startswith('postgresql://')):
+            logger.error(f"Invalid database URL in production: {database_url[:15]}...")
+            logger.error("DATABASE_URL must be a PostgreSQL connection in production environment.")
+            sys.exit(1)
+        
         # Force the use of asyncpg by explicitly replacing the dialect in the URL
         if database_url.startswith('postgresql://') or database_url.startswith('postgres://'):
             # Replace 'postgresql://' or 'postgres://' with 'postgresql+asyncpg://'
@@ -166,6 +208,11 @@ async def init_models(engine):
                 logger.info(f"Found existing tables: {tables}")
     except Exception as e:
         logger.error(f"Error initializing database models: {e}")
-        # Don't raise - let the app try to continue
+        # In production, fail on database errors
+        if IS_PRODUCTION:
+            logger.error("Database initialization failed in production environment!")
+            raise
+        # In development, try to continue
+        logger.warning("Continuing despite database initialization error in development")
         
     logger.info("Database models initialization complete.") 
