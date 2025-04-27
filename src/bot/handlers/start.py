@@ -3264,6 +3264,8 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_confirm_leave_group, F.data.startswith("confirm_leave:"))
     
     logger.info("Registering cancel_leave handler")
+    # Updated to provide session parameter to on_cancel_leave_group handler
+    logger.info("Registering on_cancel_leave_group with session parameter")
     dp.callback_query.register(on_cancel_leave_group, F.data == "cancel_leave")
     
     logger.info("Registering manage_group handler")
@@ -4001,23 +4003,52 @@ async def on_confirm_leave_group(callback: types.CallbackQuery, state: FSMContex
         logger.error(f"Error removing user from group: {e}")
         await callback.answer("Error leaving the group. Please try again.", show_alert=True)
 
-async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext) -> None:
+async def on_cancel_leave_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
     """Handle cancellation of leaving a group."""
-    await callback.answer()
+    logger.info(f"User {callback.from_user.id} cancelled leaving group")
     
-    # Get current group from state
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    group_name = data.get("current_group_name", f"Group {group_id}")
-    
-    if group_id:
-        # Return to group menu
-        await callback.message.edit_text(f"You'll stay in <b>{group_name}</b>.", parse_mode="HTML")
-        await show_group_menu(callback.message, group_id, group_name, state)
-    else:
-        # If no current group, just show welcome menu
-        await callback.message.edit_text("Action cancelled.")
-        await show_welcome_menu(callback.message)
+    try:
+        await callback.answer()
+        
+        # Get current group from state
+        data = await state.get_data()
+        group_id = data.get("current_group_id")
+        group_name = data.get("current_group_name", f"Group {group_id}")
+        
+        if not group_id:
+            logger.error("No current_group_id in state data")
+            await callback.message.edit_text("Action cancelled. Please try /start to reconnect.")
+            return
+        
+        logger.info(f"User staying in group {group_id} ({group_name})")
+        
+        # Return to the group info view
+        try:
+            # Show stay confirmation
+            await callback.message.edit_text(f"You'll stay in <b>{group_name}</b>.", parse_mode="HTML")
+            
+            # Get user from database if session available
+            if session:
+                user_tg = callback.from_user
+                db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+                
+                if db_user:
+                    # Return to group info screen
+                    logger.info(f"Showing group info again for user {db_user.id} in group {group_id}")
+                    
+                    # Trigger group info handler directly
+                    await handle_group_info_message(callback.message, state, session)
+                    return
+            
+            # Fallback to simple group menu
+            await show_group_menu(callback.message, group_id, group_name, state)
+            
+        except Exception as e:
+            logger.exception(f"Error showing group info after cancelling leave: {e}")
+            await show_group_menu(callback.message, group_id, group_name, state)
+    except Exception as e:
+        logger.exception(f"Unhandled error in on_cancel_leave_group: {e}")
+        await callback.message.answer("An error occurred. Please use /start to restart.")
 
 async def on_manage_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle group management actions."""
