@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-import asyncio
 import sys
 import os
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+import re
+from sqlalchemy import create_engine, text
 
-async def drop_production_data():
+def drop_production_data():
     """
     Drop data from the production PostgreSQL database on Railway.
     This script will truncate all relevant tables while preserving the schema.
@@ -17,6 +15,15 @@ async def drop_production_data():
         print("ERROR: DATABASE_URL environment variable is not set.")
         print("Make sure you're running this script with the Railway environment variables.")
         return False
+    
+    # Make sure it's a PostgreSQL URL
+    if not db_url.startswith("postgres"):
+        print(f"ERROR: DATABASE_URL must be a PostgreSQL URL, got: {db_url[:10]}...")
+        return False
+    
+    # Convert to standard PostgreSQL URL without async prefix if needed
+    if db_url.startswith("postgresql+asyncpg"):
+        db_url = db_url.replace("postgresql+asyncpg", "postgresql")
     
     # Confirm with a warning
     print("⚠️ WARNING ⚠️")
@@ -36,16 +43,25 @@ async def drop_production_data():
             return False
     
     try:
-        # Create engine and session
+        # Create engine and connection
         print(f"Connecting to database...")
-        engine = create_async_engine(db_url)
-        async_session = sessionmaker(
-            engine, expire_on_commit=False, class_=AsyncSession
-        )
+        # Ensure we have psycopg2 installed
+        try:
+            import psycopg2
+            print("Using psycopg2 driver")
+        except ImportError:
+            print("WARNING: psycopg2 not found, trying to install...")
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
+            import psycopg2
+            print("psycopg2-binary installed successfully")
+            
+        engine = create_engine(db_url)
         
-        async with async_session() as session:
+        with engine.connect() as connection:
             # Start transaction
             print("Starting transaction...")
+            trans = connection.begin()
             
             # List of tables to truncate in order (respecting foreign keys)
             tables = [
@@ -60,21 +76,20 @@ async def drop_production_data():
             for table in tables:
                 try:
                     # Use TRUNCATE with CASCADE to handle foreign keys
-                    await session.execute(text(f"TRUNCATE TABLE {table} CASCADE;"))
+                    connection.execute(text(f"TRUNCATE TABLE {table} CASCADE;"))
                     print(f"✓ Truncated table: {table}")
                 except Exception as e:
                     print(f"Error truncating {table}: {e}")
+                    trans.rollback()
+                    print("Transaction rolled back.")
                     return False
             
             # Commit the transaction
             print("Committing changes...")
-            await session.commit()
+            trans.commit()
             
             print("✅ All data has been successfully deleted while preserving the schema.")
             print("The application can now start with a fresh database.")
-            
-            # Close connections
-            await engine.dispose()
             return True
             
     except Exception as e:
@@ -82,5 +97,5 @@ async def drop_production_data():
         return False
 
 if __name__ == "__main__":
-    result = asyncio.run(drop_production_data())
+    result = drop_production_data()
     sys.exit(0 if result else 1) 
