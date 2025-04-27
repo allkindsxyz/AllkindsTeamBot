@@ -123,6 +123,7 @@ def register_middlewares(dp: Dispatcher):
     # session_pool = async_session_factory()
     
     # Register database middleware with the factory, not an instance
+    logger.info(f"Registering DbSessionMiddleware with factory of type: {type(async_session_factory)}")
     dp.update.middleware(DbSessionMiddleware(async_session_factory))
     
     # Register logging middleware

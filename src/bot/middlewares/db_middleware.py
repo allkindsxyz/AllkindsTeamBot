@@ -65,6 +65,8 @@ class DbSessionMiddleware(BaseMiddleware):
                 if session.is_active:
                     logger.warning(f"Rolling back session due to error: {e}")
                     await session.rollback()
+                # Add detail about the event type that caused the error
+                logger.error(f"Error in handler for {type(event).__name__}: {e}")
                 raise
             finally:
                 # Close the session

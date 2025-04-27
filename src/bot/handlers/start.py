@@ -4492,15 +4492,24 @@ async def handle_instructions_message(message: types.Message, state: FSMContext,
 async def handle_group_info_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
     """Handle the 'Group Info' button from the reply keyboard."""
     logger.info(f"User {message.from_user.id} pressed Group Info button")
+    logger.info(f"Session type: {type(session)}")
     
     # Get current group info
     data = await state.get_data()
+    logger.info(f"State data: {data}")
     group_id = data.get("current_group_id")
+    logger.info(f"Group ID from state: {group_id}")
     
-    if not group_id or not session:
-        await message.answer("Please select a group first or reconnect to the bot.")
+    if not group_id:
+        logger.error(f"Missing required data: group_id is None or empty")
+        await message.answer("Please select a group first or reconnect to the bot by typing /start.")
         return
         
+    if not session:
+        logger.error(f"Session is None, cannot proceed with database operations")
+        await message.answer("Database connection error. Please try again later or reconnect to the bot by typing /start.")
+        return
+    
     # Clean up previous instructions or group info messages
     previous_instructions_msg_id = data.get("instructions_msg_id")
     previous_group_info_msg_id = data.get("group_info_msg_id")
@@ -4525,75 +4534,19 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
         import base64
         
         # Get group details
+        logger.info(f"Attempting to fetch group with ID: {group_id}")
         group = await group_repo.get(session, group_id)
         
         if not group:
+            logger.error(f"Group with ID {group_id} not found in database")
             await message.answer("Group information not found.")
             return
         
-        # Get member count
-        from src.db.models import GroupMember
-        query = select(func.count()).select_from(GroupMember).where(GroupMember.group_id == group_id)
-        result = await session.execute(query)
-        member_count = result.scalar_one_or_none() or 0
-        
-        # Get question count
-        from src.db.models import Question
-        query = select(func.count()).select_from(Question).where(
-            Question.group_id == group_id,
-            Question.is_active == True
-        )
-        result = await session.execute(query)
-        question_count = result.scalar_one_or_none() or 0
-        
-        # Get user from DB
-        user_tg = message.from_user
-        db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-        
-        # Check if user is a creator/admin of the group
-        is_creator = await group_repo.is_group_creator(session, db_user.id, group_id)
-        
-        # Generate invite link for the group
-        # Create a payload with group information encoded in base64
-        payload = f"g{group_id}"
-        encoded_payload = base64.urlsafe_b64encode(payload.encode('utf-8')).decode('utf-8')
-        # Remove padding characters
-        encoded_payload = encoded_payload.rstrip("=")
-        
-        from aiogram.utils.deep_linking import create_start_link
-        invite_link = await create_start_link(message.bot, encoded_payload)
-        
-        # Format group info message
-        group_info = (
-            f"📊 <b>{group.name}</b>\n\n"
-            f"<i>{group.description or 'No description available'}</i>\n\n"
-            f"👥 Members: {member_count}\n"
-            f"❓ Questions: {question_count}\n"
-            f"🗓 Created: {group.created_at.strftime('%Y-%m-%d')}\n\n"
-            f"📎 Share this link to invite others:\n{invite_link}"
-        )
-        
-        # Create keyboard with appropriate buttons
-        buttons = []
-        
-        # Add Leave Group button for all members
-        buttons.append([types.InlineKeyboardButton(text="🚪 Leave Group", callback_data=f"leave_group:{group_id}")])
-        
-        # Add Manage Group button for creators
-        if is_creator:
-            buttons.append([types.InlineKeyboardButton(text="⚙️ Manage Group", callback_data=f"manage_group:{group_id}")])
-        
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
-        
-        # Store the message ID for later deletion if needed
-        info_msg = await message.answer(group_info, reply_markup=keyboard, parse_mode="HTML")
-        await state.update_data(group_info_msg_id=info_msg.message_id)
-        
-        # Set state to viewing_question to enable direct question entry
-        await state.set_state(QuestionFlow.viewing_question)
+        logger.info(f"Found group: {group.name} (ID: {group.id})")
         
         # Show group menu again to maintain context
-        await show_group_menu(message, group_id, group.name, state, session=session)
+        # NOTE: Changed this to pass current_section
+        await show_group_menu(message, group_id, group.name, state, current_section="group_info", session=session)
     except Exception as e:
         logger.error(f"Error getting group info: {e}", exc_info=True)
         # Just log the error without showing any messages
@@ -4602,8 +4555,12 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
             group = await group_repo.get(session, group_id)
             if group:
                 await show_group_menu(message, group_id, group.name, state, session=session)
+            else:
+                logger.error(f"Failed to get group {group_id} in exception handler")
+                await message.answer("Error retrieving group information. Please try selecting your group again.")
         except Exception as inner_e:
             logger.error(f"Failed to recover from group info error: {inner_e}", exc_info=True)
+            await message.answer("An error occurred while accessing group information. Please try /start again.")
 
 
 async def handle_find_match_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
