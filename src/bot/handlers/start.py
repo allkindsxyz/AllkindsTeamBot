@@ -118,6 +118,8 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
     logger.info(f"Command object: {command}")
     logger.info(f"State available: {state is not None}")
     logger.info(f"Session available: {session is not None}")
+    logger.info(f"USE_WEBHOOK environment: {os.environ.get('USE_WEBHOOK', 'not set')}")
+    logger.info(f"Bot running in: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')} environment")
     
     try:
         # Basic logging
@@ -173,34 +175,52 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
         # Ensure session is available (dependency injection handles this)
         if not session:
             logger.error("Database session not available in cmd_start")
-            await message.answer("Sorry, there was a problem connecting to the database.")
+            await message.answer("Sorry, there was a problem connecting to the database. Please try again later.")
             return
             
-        # Get or create user in DB - Convert Telegram user to dict manually
-        user_dict = {
-            "id": user_tg.id,
-            "first_name": user_tg.first_name,
-            "last_name": user_tg.last_name,
-            "username": user_tg.username,
-            "is_bot": user_tg.is_bot
-        }
-        
-        logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
-        db_user, created = await user_repo.get_or_create_user(session, user_dict)
-        if created:
-            logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
-        else:
-            logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        try:
+            # Get or create user in DB - Convert Telegram user to dict manually
+            user_dict = {
+                "id": user_tg.id,
+                "first_name": user_tg.first_name,
+                "last_name": user_tg.last_name,
+                "username": user_tg.username,
+                "is_bot": user_tg.is_bot
+            }
+            
+            logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
+            db_user, created = await user_repo.get_or_create_user(session, user_dict)
+            if created:
+                logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+            else:
+                logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        except Exception as db_error:
+            logger.error(f"Database error while getting/creating user: {db_error}")
+            logger.exception("Database operation traceback:")
+            await message.answer("Sorry, there was a database error. Please try again later.")
+            return
 
-        # Check if user belongs to any groups
-        logger.info(f"Checking if user {db_user.id} belongs to any groups")
-        user_groups = await group_repo.get_user_groups(session, db_user.id)
-        logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
+        try:
+            # Check if user belongs to any groups
+            logger.info(f"Checking if user {db_user.id} belongs to any groups")
+            user_groups = await group_repo.get_user_groups(session, db_user.id)
+            logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
+        except Exception as group_error:
+            logger.error(f"Error retrieving user groups: {group_error}")
+            logger.exception("Group retrieval traceback:")
+            await message.answer("Sorry, there was an error retrieving your groups. Please try again later.")
+            return
         
         # Create state if it doesn't exist
         if not state:
             logger.info("State not provided, creating a new one")
-            state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+            try:
+                state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+                logger.info("Successfully created state context")
+            except Exception as state_error:
+                logger.error(f"Failed to create state context: {state_error}")
+                logger.exception("State creation traceback:")
+                # Continue without state
         
         # If user is already in groups, show the group menu
         if user_groups:
@@ -209,33 +229,45 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
             group = user_groups[0]  # Take the first group
             logger.info(f"User is in group {group.id}, showing group menu")
             
-            # Verify the group still exists
-            if not await group_repo.get(session, group.id):
-                logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
-                await message.answer("This group was deleted.")
-                await show_welcome_menu(message)
+            try:
+                # Verify the group still exists
+                if not await group_repo.get(session, group.id):
+                    logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+                    await message.answer("This group was deleted.")
+                    await show_welcome_menu(message)
+                    return
+            
+                # Show the group menu
+                await show_group_menu(
+                    message=message,
+                    group_id=group.id,
+                    group_name=group.name,
+                    state=state,
+                    session=session
+                )
+            except Exception as group_menu_error:
+                logger.error(f"Error showing group menu: {group_menu_error}")
+                logger.exception("Group menu traceback:")
+                await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
                 return
-        
-            # Show the group menu
-            await show_group_menu(
-                message=message,
-                group_id=group.id,
-                group_name=group.name,
-                state=state,
-                session=session
-            )
         else:
             # User is not in any group yet
             logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
-            await show_welcome_menu(message)
+            try:
+                await show_welcome_menu(message)
+            except Exception as welcome_menu_error:
+                logger.error(f"Error showing welcome menu: {welcome_menu_error}")
+                logger.exception("Welcome menu traceback:")
+                await message.answer("Sorry, there was an error displaying the welcome menu. Please try again.")
+                return
     except Exception as e:
         logger.error(f"Unexpected error in cmd_start: {e}")
         logger.exception("Full exception traceback:")
         # Try to respond to user if possible
         try:
             await message.answer("Sorry, an unexpected error occurred. Please try again later.")
-        except:
-            pass
+        except Exception as reply_error:
+            logger.error(f"Failed to send error message to user: {reply_error}")
     
     logger.info("========== END OF START COMMAND ==========")
 

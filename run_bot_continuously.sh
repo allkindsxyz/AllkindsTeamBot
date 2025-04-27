@@ -45,14 +45,50 @@ start_health_checker() {
   log "Health checker started with PID: $HEALTH_CHECKER_PID"
 }
 
+# Function to ensure environment variables are loaded
+ensure_env_loaded() {
+  # Check if .env file exists and load it
+  if [ -f .env ]; then
+    log "Loading environment variables from .env file"
+    # Export all variables from .env file
+    set -a
+    source .env
+    set +a
+    log "Environment variables loaded from .env file"
+  else
+    log "No .env file found, using existing environment variables"
+  fi
+  
+  # Check essential variables
+  if [ -z "$BOT_TOKEN" ]; then
+    log "ERROR: BOT_TOKEN is not set!"
+    return 1
+  fi
+  
+  # Ensure USE_WEBHOOK is properly set
+  if [ -z "$USE_WEBHOOK" ]; then
+    log "USE_WEBHOOK not set, defaulting to 'false'"
+    export USE_WEBHOOK="false"
+  fi
+  
+  # Display key environment variables
+  log "BOT_TOKEN: ${BOT_TOKEN:0:6}...${BOT_TOKEN: -6} (masked)"
+  log "USE_WEBHOOK: $USE_WEBHOOK"
+  log "DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./allkinds.db}"
+  
+  return 0
+}
+
 # Display environment information
 log "=== ENVIRONMENT INFORMATION ==="
 log "Hostname: $(hostname)"
 log "Railway environment: ${RAILWAY_ENVIRONMENT:-local}"
 log "Railway service: ${RAILWAY_SERVICE_NAME:-unknown}"
 log "Health check port: ${PORT}"
-log "Bot token available: $(if [[ -n "${BOT_TOKEN}" ]]; then echo "YES"; else echo "NO"; fi)"
 log "Working directory: $(pwd)"
+
+# Load environment variables
+ensure_env_loaded || { log "Failed to set up environment variables"; exit 1; }
 
 # Set proper webhook in production, or reset in development
 if [[ "${RAILWAY_ENVIRONMENT}" == "production" && -n "${WEBHOOK_DOMAIN}" ]]; then
@@ -66,10 +102,19 @@ if [[ "${RAILWAY_ENVIRONMENT}" == "production" && -n "${WEBHOOK_DOMAIN}" ]]; the
   # Verify webhook is set correctly
   WEBHOOK_INFO=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")
   log "Webhook info: ${WEBHOOK_INFO}"
+  
+  # Update USE_WEBHOOK to match environment
+  export USE_WEBHOOK="true"
+  log "Forcing USE_WEBHOOK=true in production mode"
 else
   # For local development, delete webhook to use polling
   log "Development environment detected. Deleting webhook to use polling mode..."
-  curl -s "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true" > /dev/null
+  RESPONSE=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+  log "Delete webhook response: ${RESPONSE}"
+  
+  # Update USE_WEBHOOK to match environment
+  export USE_WEBHOOK="false"
+  log "Forcing USE_WEBHOOK=false in development mode"
 fi
 
 # Validate database connection in production
@@ -122,11 +167,47 @@ else:
   log "PostgreSQL database connection verified"
 else
   log "Running in development mode with local database"
+  # Ensure DATABASE_URL is set to something sensible for local development
+  if [[ -z "${DATABASE_URL}" ]]; then
+    log "Setting default DATABASE_URL for development"
+    export DATABASE_URL="sqlite+aiosqlite:///./allkinds.db"
+  fi
 fi
+
+# Function to verify bot token
+verify_bot_token() {
+  log "Verifying bot token..."
+  BOT_INFO=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe")
+  if [[ "$BOT_INFO" =~ "\"ok\":true" ]]; then
+    BOT_USERNAME=$(echo "$BOT_INFO" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
+    BOT_ID=$(echo "$BOT_INFO" | grep -o '"id":[0-9]*' | cut -d':' -f2)
+    log "Bot token valid for @$BOT_USERNAME (ID: $BOT_ID)"
+    return 0
+  else
+    log "ERROR: Invalid bot token! Response: $BOT_INFO"
+    return 1
+  fi
+}
+
+# Verify the bot token before starting
+verify_bot_token || { 
+  log "Bot token verification failed. Please check your BOT_TOKEN environment variable."
+  log "Waiting 60 seconds before retrying..."
+  sleep 60
+  verify_bot_token || {
+    log "Bot token verification failed again. Exiting."
+    exit 1
+  }
+}
 
 # Start the bot
 run_bot() {
   log "Starting the bot process..."
+  
+  # Display key environment variables before starting
+  log "Starting bot with BOT_TOKEN=${BOT_TOKEN:0:6}...${BOT_TOKEN: -6} (masked)"
+  log "USE_WEBHOOK=${USE_WEBHOOK}"
+  log "DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:///./allkinds.db}"
   
   # Export USE_WEBHOOK explicitly based on environment
   if [[ "${RAILWAY_ENVIRONMENT}" == "production" && -n "${WEBHOOK_DOMAIN}" ]]; then
@@ -137,7 +218,10 @@ run_bot() {
     log "Running in polling mode"
   fi
   
-  # Run the bot in the foreground
+  # Run the bot with explicit environment variables
+  BOT_TOKEN="${BOT_TOKEN}" \
+  USE_WEBHOOK="${USE_WEBHOOK}" \
+  DATABASE_URL="${DATABASE_URL}" \
   python3 -m src.bot.main
   
   # Get the exit code
@@ -169,6 +253,12 @@ while true; do
   if [ $exit_code -ne 0 ]; then
     consecutive_failures=$((consecutive_failures + 1))
     log "Consecutive failures: $consecutive_failures/$max_consecutive_failures"
+    
+    # Verify bot token after failures
+    verify_bot_token || {
+      log "Bot token appears to be invalid after failure. Verifying environment..."
+      ensure_env_loaded
+    }
     
     if [ $consecutive_failures -ge $max_consecutive_failures ]; then
       log "Too many consecutive failures. Sleeping for longer period before retry."

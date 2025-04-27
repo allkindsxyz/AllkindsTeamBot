@@ -131,10 +131,20 @@ def register_middlewares(dp: Dispatcher):
     logger.info("Middlewares registered")
 
 async def on_shutdown(dispatcher: Dispatcher, bot: Bot):
-    """Handle shutdown processes."""
+    """Handle shutdown processes with enhanced error handling."""
     logger.info("Shutting down the bot")
-    await dispatcher.fsm.storage.close()
-    await bot.session.close()
+    try:
+        await dispatcher.fsm.storage.close()
+        logger.info("FSM storage closed")
+    except Exception as e:
+        logger.error(f"Error closing FSM storage: {e}")
+    
+    try:
+        await bot.session.close()
+        logger.info("Bot session closed")
+    except Exception as e:
+        logger.error(f"Error closing bot session: {e}")
+    
     logger.info("Bot shutdown complete")
 
 async def run_webhook_bot():
@@ -174,9 +184,14 @@ async def run_webhook_bot():
     register_handlers(dp)
     
     # Set up webhook
-    webhook_url = f"{webhook_host}{webhook_path}"
-    await bot.set_webhook(url=webhook_url)
-    logger.info(f"Webhook set to {webhook_url}")
+    try:
+        webhook_url = f"{webhook_host}{webhook_path}"
+        logger.info(f"Attempting to set webhook to {webhook_url}")
+        await bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        # Continue anyway - the application might still serve webhook requests
     
     # Start aiohttp application for webhook
     app = web.Application()
@@ -185,7 +200,7 @@ async def run_webhook_bot():
     async def health_handler(request):
         return web.Response(text="Bot is running")
     
-    # Webhook handler
+    # Webhook handler with enhanced error handling
     async def webhook_handler(request):
         try:
             # Get the request data
@@ -204,9 +219,14 @@ async def run_webhook_bot():
     app.router.add_get("/health", health_handler)
     app.router.add_post(webhook_path, webhook_handler)
     
-    # Set up shutdown routine
+    # Set up shutdown routine with robust cleanup
     async def shutdown_app(app):
-        await on_shutdown(dp, bot)
+        logger.info("Application shutdown initiated")
+        try:
+            await on_shutdown(dp, bot)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+        logger.info("Application shutdown completed")
     
     app.on_shutdown.append(shutdown_app)
     
@@ -221,12 +241,19 @@ async def run_webhook_bot():
     # Keep the process alive
     try:
         while True:
+            # Periodic health check and resource monitoring
+            logger.debug("Webhook service health check")
             await asyncio.sleep(3600)  # Sleep for an hour, let things run
     except asyncio.CancelledError:
         logger.info("Bot received cancellation signal")
+    except Exception as e:
+        logger.error(f"Unexpected error in webhook loop: {e}")
     finally:
         logger.info("Shutting down webhook listener")
-        await runner.cleanup()
+        try:
+            await runner.cleanup()
+        except Exception as e:
+            logger.error(f"Error during web runner cleanup: {e}")
 
 async def run_polling_bot():
     """Run the bot in polling mode."""
@@ -254,8 +281,15 @@ async def run_polling_bot():
     register_handlers(dp)
     
     # Make sure webhook is removed
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Webhook removed, using polling mode")
+    try:
+        logger.info("Attempting to delete webhook")
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook removed, using polling mode")
+    except Exception as e:
+        logger.error(f"Failed to delete webhook: {e}")
+        logger.warning("Failed to delete webhook, continuing anyway")
+        await asyncio.sleep(3)  # Wait a bit
+        logger.info("Waiting 3 seconds for webhook to clear...")
     
     # Log diagnostic info
     diagnostics = get_diagnostics_report()
@@ -269,18 +303,26 @@ async def run_polling_bot():
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             signal.signal(sig, signal_handler)
-        except (AttributeError, RuntimeError):
+        except (AttributeError, RuntimeError) as e:
             # Windows doesn't support SIGTERM
-            pass
+            logger.warning(f"Failed to set signal handler for {sig}: {e}")
     
-    # Start polling
+    # Start polling with enhanced exception handling
     try:
         logger.info("Bot started polling for updates. Press Ctrl+C to stop")
         await dp.start_polling(bot, skip_updates=True)
     except asyncio.CancelledError:
         logger.info("Bot polling cancelled")
+    except Exception as e:
+        logger.error(f"Error during polling: {e}")
+        logger.exception("Full traceback:")
     finally:
-        await on_shutdown(dp, bot)
+        logger.info("Cleaning up polling bot resources")
+        try:
+            await on_shutdown(dp, bot)
+        except Exception as e:
+            logger.error(f"Error during bot cleanup: {e}")
+        logger.info("Polling bot cleanup completed")
 
 @asynccontextmanager
 async def lifespan(app: web.Application):
@@ -289,10 +331,15 @@ async def lifespan(app: web.Application):
     Handles database startup and shutdown cleanly.
     """
     # Database setup
-    engine = get_async_engine(settings.DATABASE_URL)
-    await init_models(engine)
+    try:
+        logger.info("Setting up database connection in lifespan context")
+        engine = get_async_engine(settings.DATABASE_URL)
+        await init_models(engine)
+        logger.info("Database setup completed")
+    except Exception as e:
+        logger.error(f"Error during database setup: {e}")
+        logger.exception("Database setup error details:")
     
-    # Start the bot here (use await asyncio.create_task if needed)
     # Yield to let the application run
     yield
     
