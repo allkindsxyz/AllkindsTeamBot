@@ -28,7 +28,22 @@ class StateLoggingMiddleware(BaseMiddleware):
             
             # Log detailed callback information
             logger.info(f"CALLBACK: User {user_id} | Data '{callback_data}' | State '{current_state}'")
-            logger.debug(f"Callback full data: {event.callback_query.model_dump_json()}")
+            
+            # Log callback details safely without using model_dump_json()
+            try:
+                callback_info = {
+                    "from_user": {
+                        "id": event.callback_query.from_user.id,
+                        "username": event.callback_query.from_user.username,
+                        "first_name": event.callback_query.from_user.first_name
+                    },
+                    "data": event.callback_query.data,
+                    "message_id": event.callback_query.message.message_id if event.callback_query.message else None,
+                    "chat_id": event.callback_query.message.chat.id if event.callback_query.message else None
+                }
+                logger.debug(f"Callback details: {callback_info}")
+            except Exception as e:
+                logger.warning(f"Error extracting callback details: {e}")
             
             # Get state data for more context
             if state:
@@ -42,7 +57,8 @@ class StateLoggingMiddleware(BaseMiddleware):
             message_text = event.message.text or "[No text]"
             
             # Log message details
-            logger.info(f"MESSAGE: User {user_id} | Text '{message_text[:30]}...' if len(message_text) > 30 else message_text")
+            shortened_text = message_text[:30] + ("..." if len(message_text) > 30 else "")
+            logger.info(f"MESSAGE: User {user_id} | Text '{shortened_text}'")
             
             # Get the FSMContext
             state = data.get('state')
