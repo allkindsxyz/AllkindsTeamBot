@@ -4494,6 +4494,12 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
     logger.info(f"User {message.from_user.id} pressed Group Info button")
     logger.info(f"Session type: {type(session)}")
     
+    # Detailed session logging
+    if session is None:
+        logger.error("Session is None - middleware might not be providing the session correctly")
+    else:
+        logger.info(f"Session is available of type {type(session)}, is_active={session.is_active if hasattr(session, 'is_active') else 'unknown'}")
+    
     # Get current group info
     data = await state.get_data()
     logger.info(f"State data: {data}")
@@ -4543,6 +4549,18 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
             return
         
         logger.info(f"Found group: {group.name} (ID: {group.id})")
+        
+        # Adding detailed group info for debugging
+        members_count = 0
+        try:
+            members = await group_repo.get_group_members(session, group_id)
+            members_count = len(members)
+            logger.info(f"Group has {members_count} members")
+        except Exception as e:
+            logger.error(f"Error counting group members: {e}")
+        
+        # Show success message
+        await message.answer(f"✅ Group info retrieved successfully! Found {group.name} with {members_count} members.")
         
         # Show group menu again to maintain context
         # NOTE: Changed this to pass current_section

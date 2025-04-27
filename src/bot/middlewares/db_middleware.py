@@ -1,6 +1,7 @@
 from typing import Any, Awaitable, Callable, Dict, Union, Tuple, Optional, TypeVar, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import logging
+import inspect
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery, Update
 from aiogram.dispatcher.flags import get_flag
@@ -39,10 +40,23 @@ class DbSessionMiddleware(BaseMiddleware):
         This creates a new session for each request and closes it after the handler is done.
         The session is passed to the handler as a parameter.
         """
+        # Log the handler name for debugging
+        handler_name = handler.__name__ if hasattr(handler, "__name__") else str(handler)
+        logger.debug(f"Processing {type(event).__name__} with handler: {handler_name}")
+        
         if get_flag(data, "skip_db"):
             # Skip DB session creation if flag is set
             logger.debug("Skipping DB session creation due to flag")
             return await handler(event, data)
+        
+        # Check if handler expects a session parameter
+        try:
+            handler_sig = inspect.signature(handler)
+            expects_session = "session" in handler_sig.parameters
+            logger.debug(f"Handler {'expects' if expects_session else 'does not expect'} session parameter")
+        except Exception as e:
+            logger.warning(f"Could not inspect handler signature: {e}")
+            expects_session = True  # Assume it needs session to be safe
         
         # Create a new database session
         try:
@@ -51,7 +65,7 @@ class DbSessionMiddleware(BaseMiddleware):
             
             # Add session to handler data
             data["session"] = session
-
+            
             try:
                 # Call the handler with the session
                 result = await handler(event, data)
