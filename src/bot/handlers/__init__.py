@@ -1,5 +1,5 @@
 from aiogram import Dispatcher
-from src.bot.handlers import start, questions, matches
+from src.bot.handlers import start, questions, matches, admin
 from loguru import logger
 
 def register_handlers(dp: Dispatcher) -> None:
@@ -16,5 +16,8 @@ def register_handlers(dp: Dispatcher) -> None:
     
     logger.info("Registering matches handlers...")
     matches.register_handlers(dp)
+    
+    logger.info("Registering admin handlers...")
+    admin.register_handlers(dp)
     
     logger.info("All handlers registered successfully") 
