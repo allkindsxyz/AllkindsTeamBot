@@ -9,6 +9,11 @@ class DbSessionMiddleware(BaseMiddleware):
     """Middleware to inject SQLAlchemy AsyncSession into handlers."""
     def __init__(self, session_pool: async_sessionmaker[AsyncSession]):
         super().__init__()
+        # Add type checking to catch errors early
+        if not isinstance(session_pool, async_sessionmaker):
+            logger.error(f"DbSessionMiddleware received incorrect type: {type(session_pool)}. Expected async_sessionmaker.")
+            logger.error("This will cause 'AsyncSession object is not callable' errors.")
+            raise TypeError(f"session_pool must be async_sessionmaker, got {type(session_pool)}")
         self.session_pool = session_pool
         logger.info("DbSessionMiddleware initialized.")
 
