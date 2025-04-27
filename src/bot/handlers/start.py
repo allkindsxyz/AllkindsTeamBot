@@ -878,8 +878,11 @@ async def on_team_confirm(callback: types.CallbackQuery, state: FSMContext, sess
 
     try:
         logger.debug("Calling group_repo.create...")
+        # Store the creator_id in a separate variable to ensure consistency
+        creator_id = db_user.id
+        
         new_group = await group_repo.create(session, {
-            "creator_id": db_user.id,
+            "creator_id": creator_id,  # Use the variable here
             "name": team_name,
             "description": team_description,
             "is_active": True,
@@ -887,14 +890,15 @@ async def on_team_confirm(callback: types.CallbackQuery, state: FSMContext, sess
         })
         logger.info(f"Group created with ID: {new_group.id}")
 
-        logger.debug(f"Adding creator {db_user.id} to group {new_group.id}...")
+        logger.debug(f"Adding creator {creator_id} to group {new_group.id}...")
+        # Use the same creator_id variable here to ensure consistency
         await group_repo.add_user_to_group(
             session,
-            db_user.id,
+            creator_id,  # Use the same variable to ensure consistency
             new_group.id,
             role=MemberRole.CREATOR
         )
-        logger.info(f"Added creator {db_user.id} as member of group {new_group.id} with CREATOR role")
+        logger.info(f"Added creator {creator_id} as member of group {new_group.id} with CREATOR role")
 
         logger.debug("Generating invite link...")
         bot = callback.bot
@@ -929,10 +933,10 @@ async def on_team_confirm(callback: types.CallbackQuery, state: FSMContext, sess
             team_description=None, # Clear specific temp data
             current_group_id=new_group.id, # Keep group ID
             current_group_name=new_group.name, # Keep group name
-            current_db_user_id=db_user.id # <<< Store the user's DB ID
+            current_db_user_id=creator_id # <<< Store the creator_id (same as db_user.id)
         )
         await state.set_state(None) # Reset FSM state to default
-        logger.info(f"State updated after team creation: group={new_group.id}, user={db_user.id}")
+        logger.info(f"State updated after team creation: group={new_group.id}, user={creator_id}")
 
     except Exception as e:
         logger.exception(f"Error creating team for user {user_tg.id}")
@@ -3401,23 +3405,75 @@ async def delete_user_answers_in_group(session: AsyncSession, user_id: int, grou
 
 async def on_go_to_group(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle go to group button click."""
+    logger.info(f"Entering on_go_to_group handler for user {callback.from_user.id}")
     await callback.answer()
     
     # Extract group ID from callback data
-    group_id = int(callback.data.split(":")[1])
-    
-    # Get group details
-    group = await group_repo.get(session, group_id)
-    if not group:
-        await callback.message.answer("Error: Team not found. Please try again.")
+    try:
+        callback_data = callback.data
+        parts = callback_data.split(":")
+        if len(parts) < 2:
+            logger.error(f"Invalid callback data format: {callback_data}")
+            await callback.message.answer("Error: Invalid callback data format. Please try again.")
+            return
+            
+        group_id = int(parts[1])
+        logger.info(f"Extracted group_id={group_id} from callback data")
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error parsing callback data '{callback.data}': {e}")
+        await callback.message.answer("Error: Invalid team ID. Please try again.")
         return
     
+    # Get group details
+    try:
+        group = await group_repo.get(session, group_id)
+        if not group:
+            logger.error(f"Group with ID {group_id} not found in database")
+            await callback.message.answer("Error: Team not found. Please try again.")
+            return
+        
+        logger.info(f"Found group: id={group.id}, name={group.name}, creator_id={group.creator_id}")
+    except Exception as e:
+        logger.exception(f"Error retrieving group with ID {group_id}: {e}")
+        await callback.message.answer("Error retrieving team details. Please try again.")
+        return
+    
+    # Get user data
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        logger.error(f"User with Telegram ID {user_tg.id} not found in database")
+        await callback.message.answer("Error: Your user account was not found. Please try /start again.")
+        return
+    
+    logger.info(f"Found user: id={db_user.id}, telegram_id={user_tg.id}")
+        
+    # Check if user is a member of this group
+    is_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
+    if not is_member:
+        logger.warning(f"User {db_user.id} is not a member of group {group_id}, adding them...")
+        try:
+            # Determine if they should be a creator or regular member
+            role = MemberRole.MEMBER
+            if group.creator_id == db_user.id:
+                role = MemberRole.CREATOR
+                logger.info(f"User {db_user.id} is the creator of group {group_id}, assigning CREATOR role")
+            
+            # Add them to the group
+            await group_repo.add_user_to_group(session, db_user.id, group_id, role=role)
+            logger.info(f"Added user {db_user.id} to group {group_id} with role {role}")
+            await session.commit()
+        except Exception as e:
+            logger.exception(f"Error adding user {db_user.id} to group {group_id}: {e}")
+            await callback.message.answer("Error joining the team. Please try again.")
+            return
+    
     # Update state with group info
-    await state.update_data(current_group_id=group_id, current_group_name=group.name)
+    await state.update_data(current_group_id=group_id, current_group_name=group.name, current_db_user_id=db_user.id)
     await state.set_state(QuestionFlow.viewing_question)
     
     # Log the action
-    logger.info(f"User {callback.from_user.id} clicked Go to group button for group {group_id} ({group.name})")
+    logger.info(f"User {callback.from_user.id} (DB ID: {db_user.id}) clicked Go to group button for group {group_id} ({group.name})")
     
     # Edit the original message to avoid having too many messages
     try:
@@ -3429,10 +3485,19 @@ async def on_go_to_group(callback: types.CallbackQuery, state: FSMContext, sessi
         await callback.message.answer(f"🎉 You're now in <b>{group.name}</b>!", parse_mode="HTML")
     
     # Show the group menu
-    await show_group_menu(callback.message, group_id, group.name, state, session=session)
+    try:
+        await show_group_menu(callback.message, group_id, group.name, state, session=session)
+    except Exception as e:
+        logger.exception(f"Error showing group menu: {e}")
+        await callback.message.answer("Error showing group menu. Please try again.")
+        return
     
     # After showing the menu, trigger the questions view
-    await on_show_questions(callback.message, state, session)
+    try:
+        await on_show_questions(callback.message, state, session)
+    except Exception as e:
+        logger.exception(f"Error showing questions: {e}")
+        await callback.message.answer("Error loading questions. Please try again.")
 
 
 async def on_answer_error(callback: types.CallbackQuery, chat_id: int) -> None:
