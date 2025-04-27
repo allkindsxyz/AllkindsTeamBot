@@ -3747,6 +3747,23 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
         
         logger.info(f"Processing photo for group {group_id}, user {user_tg.id}, nickname '{nickname}'")
         
+        # Check if user is in the group
+        try:
+            is_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
+            if not is_member:
+                logger.warning(f"User {db_user.id} is not in group {group_id}, attempting to add them")
+                try:
+                    await group_repo.add_user_to_group(session, db_user.id, group_id)
+                    await session.commit()
+                    logger.info(f"Successfully added user {db_user.id} to group {group_id}")
+                except Exception as add_error:
+                    logger.exception(f"Error adding user to group: {add_error}")
+                    await message.answer("Error: Could not add you to the group. Please try /start again.")
+                    return
+        except Exception as check_error:
+            logger.exception(f"Error checking if user is in group: {check_error}")
+            # Continue anyway, we'll handle errors in the next step
+        
         # Determine photo_file_id
         photo_file_id = None
         if message.photo:
@@ -3768,9 +3785,26 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
             logger.info(f"Profile saved successfully")
         except Exception as e:
             logger.exception(f"Error saving profile: {e}")
-            await message.answer("Error saving your profile. Please try again or contact support.")
-            await session.rollback()
-            return
+            
+            # Try a different approach if the previous one failed
+            try:
+                logger.info("Attempting alternative method to update profile")
+                from sqlalchemy import update
+                stmt = update(GroupMember).where(
+                    (GroupMember.user_id == db_user.id) & 
+                    (GroupMember.group_id == group_id)
+                ).values(
+                    nickname=nickname,
+                    photo_file_id=photo_file_id
+                )
+                await session.execute(stmt)
+                await session.commit()
+                logger.info("Alternative profile update succeeded")
+            except Exception as alt_error:
+                logger.exception(f"Alternative profile update also failed: {alt_error}")
+                await message.answer("Error saving your profile. Please try again or contact support.")
+                await session.rollback()
+                return
         
         # Get group details
         try:

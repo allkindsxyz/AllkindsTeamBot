@@ -1,7 +1,10 @@
-from sqlalchemy import select, exists, delete, update
+from typing import List, Dict, Any, Optional, Tuple, Union
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, delete, func, text
+from sqlalchemy.future import select as future_select
 
-from src.db.models import Group, GroupMember, MemberRole
+from src.db.models import Group, Question
+from src.db.models.group_member import GroupMember, MemberRole
 from src.db.repositories.base import BaseRepository
 
 class GroupRepository(BaseRepository[Group]):
@@ -129,13 +132,12 @@ class GroupRepository(BaseRepository[Group]):
         return result.scalar_one_or_none()
 
     async def get_group_member(self, session: AsyncSession, user_id: int, group_id: int) -> GroupMember:
-        """
-        Get a GroupMember by user_id and group_id.
+        """Get a group member by user_id and group_id.
         
         Args:
-            session: Database session
-            user_id: ID of the user
-            group_id: ID of the group
+            session: The database session
+            user_id: The user ID
+            group_id: The group ID
             
         Returns:
             The GroupMember object or None if not found
@@ -176,7 +178,6 @@ class GroupRepository(BaseRepository[Group]):
                     logger.warning(f"Database schema missing columns. Using simplified query: {e}")
                     
                     # Try with explicit column selection without the missing ones
-                    from sqlalchemy import select
                     query = select(
                         GroupMember.id, 
                         GroupMember.group_id, 
@@ -350,7 +351,6 @@ class GroupRepository(BaseRepository[Group]):
     async def get_question_count(self, session: AsyncSession, group_id: int) -> int:
         """Get the number of questions in a group."""
         from sqlalchemy import func
-        from src.db.models import Question
         query = select(func.count()).where(Question.group_id == group_id)
         result = await session.execute(query)
         return result.scalar_one() or 0
