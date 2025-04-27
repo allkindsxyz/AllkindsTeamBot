@@ -1,4 +1,5 @@
 from datetime import datetime
+import traceback
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -96,10 +97,10 @@ async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> li
         The list is sorted by cohesion_score in descending order.
     """
     try:
-        from loguru import logger
-        from sqlalchemy import select
         from src.db.models import GroupMember, User
         from src.bot.utils.matching import calculate_cohesion_scores
+        
+        logger.info(f"Starting find_matches for user {user_id} in group {group_id}")
         
         # Get all other active users in the same group
         query = (
@@ -111,15 +112,24 @@ async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> li
                 User.is_active == True
             )
         )
-        result = await session.execute(query)
-        potential_matches = result.scalars().all()
         
-        logger.info(f"Found {len(potential_matches)} potential matches for user {user_id} in group {group_id}")
-        
-        # Extra Railway logging
-        if IS_RAILWAY:
-            logger.info(f"RAILWAY DB DEBUG: potential_matches query SQL = {str(query)}")
-            logger.info(f"RAILWAY DB DEBUG: potential_matches = {potential_matches}")
+        try:
+            result = await session.execute(query)
+            potential_matches = result.scalars().all()
+            
+            logger.info(f"Found {len(potential_matches)} potential matches for user {user_id} in group {group_id}")
+            
+            # Extra Railway logging
+            if IS_RAILWAY:
+                logger.info(f"RAILWAY DB DEBUG: potential_matches query SQL = {str(query)}")
+                logger.info(f"RAILWAY DB DEBUG: potential_matches = {potential_matches}")
+                
+        except Exception as db_error:
+            logger.error(f"Database error when finding potential matches: {str(db_error)}")
+            if IS_RAILWAY:
+                logger.error(f"RAILWAY DB ERROR: {str(db_error)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
         
         # Calculate cohesion scores with each potential match
         match_results = []
@@ -154,7 +164,6 @@ async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> li
     except Exception as e:
         logger.error(f"Error in find_matches: {e}")
         if IS_RAILWAY:
-            import traceback
             logger.error(f"RAILWAY ERROR in find_matches: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
         return []

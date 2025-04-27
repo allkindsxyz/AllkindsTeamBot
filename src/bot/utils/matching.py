@@ -1,9 +1,11 @@
+import traceback
 import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from src.db.models import User, Answer, GroupMember, Question
+from src.core.diagnostics import IS_RAILWAY
 
 MIN_SHARED_QUESTIONS = 3  # Reduced from 10 to match the requirement in the handler
 

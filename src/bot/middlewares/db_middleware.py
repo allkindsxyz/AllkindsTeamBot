@@ -44,9 +44,13 @@ class DbSessionMiddleware(BaseMiddleware):
         handler_name = handler.__name__ if hasattr(handler, "__name__") else str(handler)
         logger.debug(f"Processing {type(event).__name__} with handler: {handler_name}")
         
-        if get_flag(data, "skip_db"):
-            # Skip DB session creation if flag is set
-            logger.debug("Skipping DB session creation due to flag")
+        # Check for flags - either skip_db=True means skip DB, or needs_db=False means skip DB
+        skip_db = get_flag(data, "skip_db")
+        needs_db = get_flag(data, "needs_db", default=None)
+        
+        # If skip_db is explicitly set to True OR needs_db is explicitly set to False, skip DB session
+        if skip_db is True or (needs_db is not None and needs_db is False):
+            logger.debug("Skipping DB session creation due to flags")
             return await handler(event, data)
         
         # Check if handler expects a session parameter

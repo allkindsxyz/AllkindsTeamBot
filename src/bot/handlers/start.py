@@ -3172,6 +3172,9 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
 
 def register_handlers(dp: Dispatcher) -> None:
     """Register all handlers for the bot."""
+    # Create flags
+    needs_db = {"needs_db": True}
+    
     # Basic commands
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_clear_profile, Command("clear_profile"))
@@ -3195,10 +3198,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_use_original_text, F.data.startswith("use_original_text"))
     
     # Add handlers for reply keyboard buttons
-    dp.message.register(handle_find_match_message, F.text == "Find Match")
-    dp.message.register(handle_group_info_message, F.text == "Group Info")
-    dp.message.register(handle_instructions_message, F.text == "Instructions")
-    dp.message.register(handle_add_question_message, F.text == "Add Question")
+    # Ensure these message handlers have the needs_db flag
+    dp.message.register(handle_find_match_message, F.text == "Find Match", flags=needs_db)
+    dp.message.register(handle_group_info_message, F.text == "Group Info", flags=needs_db)
+    dp.message.register(handle_instructions_message, F.text == "Instructions", flags=needs_db)
+    dp.message.register(handle_add_question_message, F.text == "Add Question", flags=needs_db)
     
     # Register the callback handlers for inline keyboard buttons
     dp.callback_query.register(on_add_question_callback, F.data == "add_question")
@@ -4723,6 +4727,14 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
     try:
         logger.info(f"User {message.from_user.id} pressed Find Match button")
         
+        # Validate session
+        if session is None:
+            logger.error("Session is None in handle_find_match_message - this should not happen!")
+            await message.answer("❌ Database connection error. Please try again later or use /start to restart.")
+            return
+            
+        logger.info(f"Session type: {type(session)}")
+        
         # Get current data
         data = await state.get_data()
         group_id = data.get("current_group_id")
@@ -4801,8 +4813,23 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         
         # Find matches
         logger.info(f"Calling find_matches for user {db_user.id} in group {group_id}")
-        match_results = await find_matches(session, db_user.id, int(group_id))
-        logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
+        try:
+            match_results = await find_matches(session, db_user.id, int(group_id))
+            logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
+        except Exception as match_error:
+            logger.error(f"Error in find_matches call: {str(match_error)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Refund points since there was an error
+            db_user.points += FIND_MATCH_COST
+            session.add(db_user)
+            await session.commit()
+            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+            
+            await message.answer("❌ An error occurred while finding matches. Please try again later.")
+            await show_group_menu(message, group_id, group.name, state, session=session)
+            return
         
         if not match_results or len(match_results) == 0:
             # No matches found
