@@ -4538,6 +4538,15 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
         from src.db.models import Group
         from sqlalchemy import func, select
         import base64
+        from datetime import datetime
+        
+        # Get user from database
+        user_tg = message.from_user
+        db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+        if not db_user:
+            logger.error(f"User with Telegram ID {user_tg.id} not found in database")
+            await message.answer("Your user profile was not found. Please try /start to restart.")
+            return
         
         # Get group details
         logger.info(f"Attempting to fetch group with ID: {group_id}")
@@ -4550,20 +4559,78 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
         
         logger.info(f"Found group: {group.name} (ID: {group.id})")
         
-        # Adding detailed group info for debugging
-        members_count = 0
-        try:
-            members = await group_repo.get_group_members(session, group_id)
-            members_count = len(members)
-            logger.info(f"Group has {members_count} members")
-        except Exception as e:
-            logger.error(f"Error counting group members: {e}")
+        # Get group members
+        members = await group_repo.get_group_members(session, group_id)
+        members_count = len(members) if members else 0
+        logger.info(f"Group has {members_count} members")
         
-        # Show success message
-        await message.answer(f"✅ Group info retrieved successfully! Found {group.name} with {members_count} members.")
+        # Get user's role in group
+        user_role = await group_repo.get_user_role(session, db_user.id, group_id)
+        is_creator = user_role == "creator"
         
-        # Show group menu again to maintain context
-        # NOTE: Changed this to pass current_section
+        # Format creation date
+        created_at = group.created_at
+        if created_at:
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                except ValueError:
+                    created_at = None
+            
+            if created_at:
+                created_at_str = created_at.strftime("%d %b %Y")
+            else:
+                created_at_str = "Unknown date"
+        else:
+            created_at_str = "Unknown date"
+        
+        # Build group info message
+        group_info = [
+            f"<b>📋 Group Information</b>",
+            f"",
+            f"<b>Name:</b> {group.name}",
+        ]
+        
+        # Add description if available
+        if group.description:
+            group_info.append(f"<b>Description:</b> {group.description}")
+        
+        # Add creation date and member count
+        group_info.extend([
+            f"<b>Created:</b> {created_at_str}",
+            f"<b>Members:</b> {members_count}",
+            f"<b>Your role:</b> {user_role.capitalize()}"
+        ])
+        
+        # Add share info
+        if hasattr(group, 'join_code') and group.join_code:
+            group_info.extend([
+                f"",
+                f"<b>Share code:</b> <code>{group.join_code}</code>",
+                f"You can share this code with others to invite them to this group."
+            ])
+        
+        # Create inline keyboard with management options
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            # Show manage group button only for creator/admin
+            [types.InlineKeyboardButton(
+                text="⚙️ Manage Group", 
+                callback_data=f"manage_group:{group_id}"
+            )] if is_creator else [],
+            # Always show leave group button
+            [types.InlineKeyboardButton(
+                text="🚪 Leave Group", 
+                callback_data=f"leave_group:{group_id}"
+            )]
+        ])
+        
+        # Send the group info message
+        info_msg = await message.answer("\n".join(group_info), parse_mode="HTML", reply_markup=keyboard)
+        
+        # Store the message ID for future cleanup
+        await state.update_data(group_info_msg_id=info_msg.message_id)
+        
+        # Show group menu to maintain context
         await show_group_menu(message, group_id, group.name, state, current_section="group_info", session=session)
     except Exception as e:
         logger.error(f"Error getting group info: {e}", exc_info=True)
