@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -13,6 +14,8 @@ from dotenv import load_dotenv
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
+import threading
+from aiohttp import web
 
 from src.communicator_bot.handlers import register_handlers
 from src.core.config import get_settings
@@ -30,7 +33,7 @@ logger.info(f"Communicator bot logs will be written to {log_file}")
 load_dotenv()
 
 # Try to get token from environment directly first, then fallback to settings
-COMMUNICATOR_BOT_TOKEN = os.getenv("COMMUNICATOR_BOT_TOKEN")
+COMMUNICATOR_BOT_TOKEN = os.environ.get("COMMUNICATOR_BOT_TOKEN")
 if not COMMUNICATOR_BOT_TOKEN:
     # Fallback to settings
     settings = get_settings()
@@ -49,6 +52,35 @@ else:
 bot = None
 dp = None
 should_exit = False
+
+# Setup health check server
+async def setup_health_server():
+    """Set up a health check web server for Railway."""
+    port = os.environ.get("PORT", "8080")
+    
+    # Create a simple health check endpoint
+    async def health_handler(request):
+        """Handler for /health endpoint."""
+        logger.debug("Health check received")
+        return web.Response(text="Communicator bot is running")
+    
+    app = web.Application()
+    app.router.add_get("/health", health_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(port))
+    await site.start()
+    
+    logger.info(f"Health check server running on port {port}")
+    
+    # Keep the server running
+    while not should_exit:
+        await asyncio.sleep(1)
+    
+    # Cleanup when exiting
+    logger.info("Shutting down health check server")
+    await runner.cleanup()
 
 async def reset_webhook():
     """Reset the Telegram webhook to ensure no conflicts."""
@@ -102,19 +134,18 @@ async def reset_webhook():
 
 async def shutdown(signal_name=None):
     """Shutdown the bot gracefully."""
-    global bot
+    global bot, should_exit
     
     if signal_name:
         logger.info(f"Received {signal_name}, shutting down...")
+    
+    # Set the exit flag for health server
+    should_exit = True
     
     # Close bot session properly
     if bot:
         logger.info("Closing bot connection...")
         await bot.session.close()
-    
-    # Set the exit flag
-    global should_exit
-    should_exit = True
     
     logger.info("Communicator bot stopped.")
 
@@ -125,6 +156,10 @@ async def start_communicator_bot() -> None:
     if not COMMUNICATOR_BOT_TOKEN:
         logger.error("Communicator Bot Token not found!")
         return
+
+    # Start health check server in a separate task
+    health_server_task = asyncio.create_task(setup_health_server())
+    logger.info("Health check server task created")
 
     # Reset webhook before starting
     if not await reset_webhook():
@@ -226,6 +261,13 @@ async def start_communicator_bot() -> None:
         logger.exception(f"Error starting communicator bot: {e}")
     finally:
         await shutdown()
+        # Cancel the health server task
+        if health_server_task and not health_server_task.done():
+            health_server_task.cancel()
+            try:
+                await health_server_task
+            except asyncio.CancelledError:
+                logger.info("Health server task cancelled")
 
 def setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
