@@ -19,15 +19,45 @@ class DatabaseMiddleware(BaseMiddleware):
         # Use the same database configuration as the main bot
         self.settings = get_settings()
         
+        # RAILWAY_ENVIRONMENT will be set to 'production' in Railway
+        is_production = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
+        
         # Get database URL from environment - SAME AS MAIN BOT
         db_url = os.environ.get("DATABASE_URL", self.settings.db_url)
         logger.info(f"Original database URL (starts with): {db_url[:15] if db_url else 'None'}...")
         
         # Process the database URL - same logic as the main bot
         if db_url.startswith('postgres://'):
+            # For asyncpg, replace postgres:// with postgresql+asyncpg://
             db_url = db_url.replace('postgres://', 'postgresql+asyncpg://', 1)
+            logger.info(f"Converted postgres:// to postgresql+asyncpg:// for compatibility")
         elif db_url.startswith('postgresql://'):
+            # Replace postgresql:// with postgresql+asyncpg://
             db_url = db_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+            logger.info(f"Converted postgresql:// to postgresql+asyncpg:// for compatibility")
+        
+        # Enforce PostgreSQL in production
+        if is_production and not ('postgresql+asyncpg' in db_url):
+            logger.error(f"Production environment requires PostgreSQL! Current URL type: {db_url.split('://')[0]}")
+            logger.warning("Attempting to recover by enforcing PostgreSQL URL format")
+            # Try to force it to use PostgreSQL
+            if 'sqlite' in db_url:
+                # Get from environment again as a last resort
+                fallback_url = os.environ.get("DATABASE_URL")
+                if fallback_url and ('postgres' in fallback_url):
+                    logger.info(f"Recovered PostgreSQL URL from environment")
+                    # Process it again to ensure proper format
+                    if fallback_url.startswith('postgres://'):
+                        db_url = fallback_url.replace('postgres://', 'postgresql+asyncpg://', 1)
+                    elif fallback_url.startswith('postgresql://'):
+                        db_url = fallback_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+                    else:
+                        db_url = fallback_url
+                else:
+                    logger.critical("CRITICAL: Cannot find PostgreSQL URL in production environment!")
+                    # Don't use SQLite in production - this will cause the bot to fail but that's better
+                    # than silently using SQLite and having data inconsistency
+                    raise ValueError("PostgreSQL URL required in production environment")
         
         logger.info(f"Using database URL (starts with): {db_url[:15] if db_url else 'None'}...")
         
@@ -41,25 +71,34 @@ class DatabaseMiddleware(BaseMiddleware):
                     "application_name": "allkinds-communicator"
                 }
             }
+            logger.info("Using PostgreSQL connection settings with asyncpg driver")
+        else:
+            logger.warning(f"Not using PostgreSQL: {db_url.split('://')[0]}")
         
         # Create the engine with the same configuration as the main bot
-        self.engine = create_async_engine(
-            db_url,
-            echo=False,
-            future=True,
-            pool_pre_ping=True,
-            pool_recycle=300,
-            pool_timeout=30,
-            pool_size=5,
-            max_overflow=10,
-            connect_args=connect_args
-        )
-        
-        self.session_factory = async_sessionmaker(
-            self.engine,
-            expire_on_commit=False,
-            autoflush=False
-        )
+        try:
+            self.engine = create_async_engine(
+                db_url,
+                echo=False,
+                future=True,
+                pool_pre_ping=True,
+                pool_recycle=300,
+                pool_timeout=30,
+                pool_size=5,
+                max_overflow=10,
+                connect_args=connect_args
+            )
+            
+            self.session_factory = async_sessionmaker(
+                self.engine,
+                expire_on_commit=False,
+                autoflush=False
+            )
+            
+            logger.info(f"Database engine created successfully: {db_url.split('://')[0]}")
+        except Exception as e:
+            logger.error(f"Failed to create database engine: {e}")
+            raise
     
     async def __call__(
         self,
@@ -68,9 +107,35 @@ class DatabaseMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         """Inject database session into handler."""
-        async with self.session_factory() as session:
+        session = None
+        try:
+            session = self.session_factory()
+            logger.debug(f"Created database session {id(session)}")
             data["session"] = session
-            return await handler(event, data)
+            
+            # We use a nested approach with context manager to handle transaction management
+            async with session:
+                logger.debug("Executing handler within database session context")
+                result = await handler(event, data)
+                logger.debug("Handler execution complete")
+                return result
+        except Exception as e:
+            logger.error(f"Error in database middleware: {e}")
+            # If we have a session and it's still active, try to rollback
+            if session:
+                try:
+                    await session.rollback()
+                    logger.info("Session rolled back after error")
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback session: {rollback_error}")
+            raise
+        finally:
+            if session:
+                try:
+                    await session.close()
+                    logger.debug(f"Closed database session {id(session)}")
+                except Exception as close_error:
+                    logger.error(f"Failed to close database session: {close_error}")
 
 
 class LoggingMiddleware(BaseMiddleware):
