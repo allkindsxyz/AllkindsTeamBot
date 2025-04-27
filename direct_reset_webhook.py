@@ -126,15 +126,21 @@ def main():
     # Get updated webhook info
     updated_info = get_webhook_info(args.token)
     
-    return 0
-
-if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        # Show usage example if no args
-        print("Usage examples:")
-        print("    python direct_reset_webhook.py --token YOUR_BOT_TOKEN --url YOUR_WEBHOOK_URL")
-        print("    python direct_reset_webhook.py --token YOUR_BOT_TOKEN")  # Delete only
-        print("\nThe correct token for @allkindsteam_bot is: 7910000886:AAHwuYKz8je_JSrpf53lXX8S6V5mfTqLd6Y")
+    # Delete current webhook
+    if delete_webhook(args.token):
+        if args.delete_only:
+            logger.info("Delete only mode, webhook deleted successfully")
+            return
+            
+        # Set new webhook
+        if set_webhook(args.token, args.url):
+            # Check again to verify
+            check_webhook_info(args.token)
+        else:
+            logger.error("Failed to set webhook")
+            sys.exit(1)
+    else:
+        logger.error("Failed to delete webhook")
         sys.exit(1)
         
     sys.exit(main()) 
