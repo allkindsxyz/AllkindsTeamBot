@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
 from src.core.config import get_settings
 from src.bot.handlers import register_handlers
-from src.bot.middlewares import DbSessionMiddleware
+from src.bot.middlewares.db_middleware import DbSessionMiddleware
 from src.bot.middlewares.logging_middleware import StateLoggingMiddleware
 from src.db.base import async_session_factory
 from src.db import get_async_engine, init_models, get_session
