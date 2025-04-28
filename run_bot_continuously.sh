@@ -35,6 +35,7 @@ check_health() {
 }
 
 # Function to run health check in a separate process
+start_health_server
 start_health_checker() {
   log "Starting health check monitor"
   while true; do
@@ -201,6 +202,25 @@ verify_bot_token || {
 }
 
 # Start the bot
+
+# Function to start the health server
+start_health_server() {
+  log "Starting health server on port ${PORT}..."
+  python3 health_server.py &
+  HEALTH_SERVER_PID=$!
+  log "Health server started with PID: ${HEALTH_SERVER_PID}"
+  
+  # Verify health server is running
+  sleep 2
+  if ps -p ${HEALTH_SERVER_PID} > /dev/null; then
+    log "Health server is running"
+    return 0
+  else
+    log "WARNING: Health server failed to start!"
+    return 1
+  fi
+}
+
 run_bot() {
   log "Starting the bot process..."
   
@@ -238,6 +258,7 @@ run_bot() {
 
 # Main loop to keep the bot running
 log "=== STARTING BOT RUNNER ==="
+start_health_server
 start_health_checker
 
 # Keep track of consecutive failures
