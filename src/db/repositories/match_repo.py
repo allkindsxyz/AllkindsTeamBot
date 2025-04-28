@@ -14,8 +14,8 @@ from typing import List, Optional, Tuple, Dict, Any
 
 from src.core.config import get_settings
 from src.db.models import GroupMember, Answer, Question
-from src.db.decorators import track_db, with_retry
-from src.db.utils.session_management import ensure_active_session
+from src.core.diagnostics import track_db
+from src.db.utils.session_management import ensure_active_session, with_retry
 
 # Get settings for constants
 settings = get_settings()
@@ -96,6 +96,7 @@ async def get_match_between_users(session: AsyncSession, user1_id: int, user2_id
 
 
 @track_db
+@with_retry(max_attempts=3, base_delay=0.5, max_delay=5.0)
 async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> list:
     print(f"DEBUG_MATCH: find_matches called with user_id={user_id}, group_id={group_id}")
     logger.info(f"DEBUG_MATCH: find_matches called with user_id={user_id}, group_id={group_id}")
