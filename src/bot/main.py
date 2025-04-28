@@ -32,6 +32,7 @@ from src.bot.middlewares.logging_middleware import StateLoggingMiddleware
 from src.db.base import async_session_factory
 from src.db import get_async_engine, init_models, get_session
 from src.core.diagnostics import get_diagnostics_report, IS_RAILWAY
+from src.core.startup import run_startup_tasks
 
 # Configure logging
 logging.basicConfig(
@@ -364,6 +365,10 @@ async def main():
             engine = get_async_engine(settings.db_url)
             await init_models(engine)
             logger.info("Database initialized")
+            
+            # Run startup tasks for database integrity
+            logger.info("Running startup integrity checks...")
+            await run_startup_tasks()
         
         # Decide between webhook and polling modes
         if settings.USE_WEBHOOK:

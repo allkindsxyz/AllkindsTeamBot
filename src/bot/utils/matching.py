@@ -6,6 +6,7 @@ from loguru import logger
 
 from src.db.models import User, Answer, GroupMember, Question
 from src.core.diagnostics import IS_RAILWAY
+from src.db.utils.session_management import ensure_active_session, with_retry
 
 MIN_SHARED_QUESTIONS = 3  # Reduced from 10 to match the requirement in the handler
 
@@ -63,6 +64,7 @@ def calculate_cohesion_score(user1_answers: dict, user2_answers: dict) -> float:
     
     return cohesion_score
 
+@with_retry(max_attempts=3, base_delay=0.5, max_delay=5.0)
 async def find_best_match(session: AsyncSession, user_id: int, group_id: int):
     """
     Find the best match for a user in a group based on their question answers.
@@ -72,6 +74,9 @@ async def find_best_match(session: AsyncSession, user_id: int, group_id: int):
         or None if no match found.
     """
     logger.info(f"Starting match search for user {user_id} in group {group_id}")
+    
+    # Ensure we have an active session
+    session = await ensure_active_session(session)
     
     # Get the user's answers in this group
     query = select(Answer.question_id, Answer.value)\
@@ -106,6 +111,9 @@ async def find_best_match(session: AsyncSession, user_id: int, group_id: int):
     best_common_questions = []
     
     for other_user_id in other_users:
+        # Ensure session is active for each iteration to handle potential connection issues
+        session = await ensure_active_session(session)
+        
         # Get other user's answers
         query = select(Answer.question_id, Answer.value)\
             .join(Question, Question.id == Answer.question_id)\
@@ -146,6 +154,9 @@ async def find_best_match(session: AsyncSession, user_id: int, group_id: int):
     question_categories = {}
     category_questions = {}
     category_scores = {}
+    
+    # Ensure session is active before the category calculations
+    session = await ensure_active_session(session)
     
     # Get category data for all common questions
     for q_id in best_common_questions:
