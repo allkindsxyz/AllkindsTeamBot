@@ -5066,26 +5066,20 @@ async def handle_add_question_message(message: types.Message, state: FSMContext,
     
     # Store group_id in state
     await state.update_data(current_group_id=group_id)
-    
     # Send instructions
     await message.answer(
-        "Please enter your yes/no question.
+        """Please enter your yes/no question.
 
-"
-        "Good questions should be:
-"
-        "• Clear and concise
-"
-        "• Answerable with yes/no
-"
-        "• Related to values or preferences
+Good questions should be:
+• Clear and concise
+• Answerable with yes/no
+• Related to values or preferences
 
-"
-        "Example: \"Do you believe in giving second chances?\"
+Example: "Do you believe in giving second chances?"
 
-"
-        "Type /cancel to cancel."
+Type /cancel to cancel."""
     )
+
 
 from aiogram import Dispatcher, F, types, Bot
 from aiogram.filters import Command, CommandObject
