@@ -84,6 +84,8 @@ async def get_match_between_users(session: AsyncSession, user1_id: int, user2_id
 
 @track_db
 async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> list:
+    print(f"DEBUG_MATCH: find_matches called with user_id={user_id}, group_id={group_id}")
+    logger.info(f"DEBUG_MATCH: find_matches called with user_id={user_id}, group_id={group_id}")
     """
     Find potential matches for a user in a group.
     
@@ -96,11 +98,25 @@ async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> li
         A list of tuples containing (matched_user_id, cohesion_score, common_questions, category_scores, category_counts)
         The list is sorted by cohesion_score in descending order.
     """
+    logger.info(f"[DEBUG_MATCH_DB] find_matches called with user_id={user_id}, group_id={group_id}")
+    
+    # For Railway debugging, log the session state
+    if IS_RAILWAY:
+        logger.info(f"RAILWAY DB DEBUG: Session info - id={id(session)}, is_active={session.is_active}")
+    
     try:
         from src.db.models import GroupMember, User
         from src.bot.utils.matching import calculate_cohesion_scores
         
         logger.info(f"Starting find_matches for user {user_id} in group {group_id}")
+        
+        # Ensure we have a clean session state - commit any pending changes
+        try:
+            if session.is_active:
+                await session.commit()
+                logger.info("Session committed before starting match search")
+        except Exception as commit_error:
+            logger.error(f"Error committing session before match search: {commit_error}")
         
         # Get all other active users in the same group
         query = (
@@ -131,6 +147,11 @@ async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> li
                 logger.error(f"Traceback: {traceback.format_exc()}")
             return []
         
+        # If no potential matches, return early
+        if not potential_matches:
+            logger.info(f"No potential matches found for user {user_id} in group {group_id}")
+            return []
+            
         # Calculate cohesion scores with each potential match
         match_results = []
         for potential_match_id in potential_matches:
@@ -139,8 +160,50 @@ async def find_matches(session: AsyncSession, user_id: int, group_id: int) -> li
                     session, user_id, potential_match_id, group_id
                 )
                 
-                # Only include if they have common questions
-                if common_questions > 0:
+                # Only include if they have common questions and meet minimum threshold
+                if common_questions >= 3:  # Using the same threshold as MIN_SHARED_QUESTIONS
+                    match_results.append((
+                        potential_match_id,  # matched user ID
+                        cohesion_score,      # overall cohesion score
+                        common_questions,    # number of common questions
+                        category_scores,     # dictionary of category scores
+                        category_counts      # dictionary of question counts per category
+                    ))
+                    logger.debug(f"Match with user {potential_match_id}: score={cohesion_score}, questions={common_questions}")
+            except Exception as e:
+                logger.error(f"Error calculating cohesion with user {potential_match_id}: {e}")
+                if IS_RAILWAY:
+                    logger.error(f"RAILWAY ERROR in calculate_cohesion_scores: {str(e)}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                continue
+        
+        # Sort by cohesion score (highest first)
+        match_results.sort(key=lambda x: x[1], reverse=True)
+        
+        logger.info(f"Found {len(match_results)} valid matches for user {user_id} in group {group_id}")
+        return match_results
+    except Exception as e:
+        logger.error(f"Error in find_matches: {e}")
+        if IS_RAILWAY:
+            logger.error(f"RAILWAY ERROR in find_matches: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+        return []
+        
+        # If no potential matches, return early
+        if not potential_matches:
+            logger.info(f"No potential matches found for user {user_id} in group {group_id}")
+            return []
+            
+        # Calculate cohesion scores with each potential match
+        match_results = []
+        for potential_match_id in potential_matches:
+            try:
+                cohesion_score, common_questions, category_scores, category_counts = await calculate_cohesion_scores(
+                    session, user_id, potential_match_id, group_id
+                )
+                
+                # Only include if they have common questions and meet minimum threshold
+                if common_questions >= 3:  # Using the same threshold as MIN_SHARED_QUESTIONS
                     match_results.append((
                         potential_match_id,  # matched user ID
                         cohesion_score,      # overall cohesion score
