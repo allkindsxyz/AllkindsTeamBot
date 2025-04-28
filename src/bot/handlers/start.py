@@ -9905,7 +9905,7 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         logger.info(f"Calling find_matches for user {db_user.id} in group {group_id}")
         try:
             match_results = await find_matches(session, db_user.id, int(group_id))
-            logger.info(f"Found {len(match_results)}
+logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
         if not match_results or len(match_results) == 0:
             # No matches found - no need to deduct points
             logger.info(f"No matches found for user {db_user.id} in group {group_id}")
