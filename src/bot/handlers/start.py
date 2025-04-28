@@ -9905,7 +9905,15 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         logger.info(f"Calling find_matches for user {db_user.id} in group {group_id}")
         try:
             match_results = await find_matches(session, db_user.id, int(group_id))
-logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
+            logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
+        except Exception as match_error:
+            logger.error(f"Error in find_matches call: {str(match_error)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            await message.answer("❌ An error occurred while finding matches. Please try again later.")
+            await show_group_menu(message, group_id, group.name, state, session=session)
+            return
         if not match_results or len(match_results) == 0:
             # No matches found - no need to deduct points
             logger.info(f"No matches found for user {db_user.id} in group {group_id}")
@@ -9932,7 +9940,6 @@ logger.info(f"Found {len(match_results)} potential matches for user {db_user.id}
         logger.info(f"Deducted {FIND_MATCH_COST} points from user {db_user.id}, new balance: {db_user.points} (was {old_points})")
         
         # We already have match results, no need to find matches again
- potential matches for user {db_user.id} in group {group_id}")
         except Exception as match_error:
             logger.error(f"Error in find_matches call: {str(match_error)}")
             import traceback
