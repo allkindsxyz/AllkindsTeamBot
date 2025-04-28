@@ -2541,7 +2541,14 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
             chat_session.session_id = session_id
             await session.commit()
             
+        # Ensure bot username is valid before creating the link
+        if not bot_username or bot_username.strip() == "":
+            logger.warning("[DEEP_LINK] Bot username is empty or invalid")
+            bot_username = "AllkindsCommunicatorBot"  # Use fallback
+            logger.info(f"[DEEP_LINK] Using fallback username: {bot_username}")
+            
         deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"
+        logger.info(f"[DEEP_LINK] Generated deep link: {deep_link}")
         logger.debug(f"[START_ANON_CHAT] Generated deep link: {deep_link}")
         
         # Create inline button for the deeplink
@@ -3403,7 +3410,14 @@ async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMCont
 
         # Generate a deep link to the communicator bot
         communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
+        # Ensure username is valid before creating the link
+        if not communicator_bot_username or communicator_bot_username == "":
+            communicator_bot_username = "AllkindsCommunicatorBot"  # Fallback to a known username
+            logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
+        
+        # Create the deep link with proper validation
         deep_link = f"https://t.me/{communicator_bot_username}?start=chat_{chat_id}"
+        logger.info(f"Generated deep link: {deep_link}")
 
         # Send confirmation to the initiating user (User A)
         confirmation_text = f"✅ Chat session created! Click the button below to start chatting anonymously."
@@ -7625,7 +7639,14 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
             chat_session.session_id = session_id
             await session.commit()
             
+        # Ensure bot username is valid before creating the link
+        if not bot_username or bot_username.strip() == "":
+            logger.warning("[DEEP_LINK] Bot username is empty or invalid")
+            bot_username = "AllkindsCommunicatorBot"  # Use fallback
+            logger.info(f"[DEEP_LINK] Using fallback username: {bot_username}")
+            
         deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"
+        logger.info(f"[DEEP_LINK] Generated deep link: {deep_link}")
         logger.debug(f"[START_ANON_CHAT] Generated deep link: {deep_link}")
         
         # Create inline button for the deeplink
@@ -8486,7 +8507,14 @@ async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMCont
 
         # Generate a deep link to the communicator bot
         communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
+        # Ensure username is valid before creating the link
+        if not communicator_bot_username or communicator_bot_username == "":
+            communicator_bot_username = "AllkindsCommunicatorBot"  # Fallback to a known username
+            logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
+        
+        # Create the deep link with proper validation
         deep_link = f"https://t.me/{communicator_bot_username}?start=chat_{chat_id}"
+        logger.info(f"Generated deep link: {deep_link}")
 
         # Send confirmation to the initiating user (User A)
         confirmation_text = f"✅ Chat session created! Click the button below to start chatting anonymously."
