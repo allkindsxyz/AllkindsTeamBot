@@ -44,7 +44,7 @@ else:
 
 # Log token first few characters for debugging
 if COMMUNICATOR_BOT_TOKEN:
-    logger.info(f"Token starts with: {COMMUNICATOR_BOT_TOKEN[:5]}...")
+    logger.info("Token loaded successfully")
 else:
     logger.error("No token found!")
 
