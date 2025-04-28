@@ -20,23 +20,31 @@ async def init_db(max_retries=5, retry_delay=2):
     logger.info(f"Initializing database with URL type: {SQLALCHEMY_DATABASE_URL.split('://')[0]}")
     
     # Set connect_args based on database type
-    connect_args = {}
+    connect_args = {
+        "command_timeout": 30,  # Command execution timeout
+        "timeout": 30,  # Increased connection timeout,
+        "statement_cache_size": 0  # Disable statement cache
+    }
     if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
         connect_args = {
-            "timeout": 10,  # Connection timeout in seconds
+            "timeout": 30,             # Increased connection timeout to 30 seconds
+            "command_timeout": 30,     # Added command timeout of 30 seconds
             "server_settings": {
-                "application_name": "allkinds_init"
-            }
-            # Removed host override to use Railway's provided hostname
+                "application_name": "allkinds_init",
+        "statement_cache_size": 0  # Disable statement cache
+    },
+            "statement_cache_size": 0  # Disable statement cache for more reliable connections
         }
     
-    # Create engine with connection parameters
+    # Create engine with improved connection parameters for Railway
     engine = create_async_engine(
         SQLALCHEMY_DATABASE_URL, 
         echo=True,
         pool_pre_ping=True,
-        pool_recycle=300,
-        pool_timeout=30,  
+        pool_recycle=180,                 # Recycle connections more frequently (3 minutes),              # Recycle connections more frequently (3 minutes)
+        pool_timeout=45,                  # Increased timeout for cloud environments,               # Increased pool timeout for cloud environments
+        pool_size=10,                     # Increased pool size for better concurrency,                   # Keep limited pool size for initialization
+        max_overflow=20,           # Allow more overflow connections for spikes,               # Allow some overflow
         connect_args=connect_args
     )
     

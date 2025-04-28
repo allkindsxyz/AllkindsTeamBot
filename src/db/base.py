@@ -108,27 +108,33 @@ class Base(DeclarativeBase):
 
 
 # Set connect_args based on database type
-connect_args = {}
+connect_args = {
+        "command_timeout": 30,  # Command execution timeout
+        "timeout": 30,  # Increased connection timeout,
+        "statement_cache_size": 0  # Disable statement cache
+    }
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
-    # PostgreSQL specific connect args for asyncpg
+    # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
-        "timeout": 10,  # Connection timeout in seconds
+        "timeout": 30,             # Increase connection timeout to 30 seconds
+        "command_timeout": 30,     # Add command timeout of 30 seconds
         "server_settings": {
-            "application_name": "allkinds"
-        }
-        # Removed the 'host': '127.0.0.1' override which was causing issues
+            "application_name": "allkinds",
+        "statement_cache_size": 0  # Disable statement cache
+    },
+        "statement_cache_size": 0  # Disable statement cache to avoid issues with long-running connections
     }
 
-# Create async engine with enhanced parameters for better connection handling
+# Create async engine with enhanced parameters for better connection handling in cloud environments
 engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
     echo=settings.debug,
     future=True,
     pool_pre_ping=True,               # Verify connections before using them
-    pool_recycle=300,                 # Recycle connections every 5 minutes
-    pool_timeout=30,                  # Connection timeout of 30 seconds
-    pool_size=5,                      # Smaller pool size to avoid overwhelming the database
-    max_overflow=10,                  # Allow up to 10 additional connections
+    pool_recycle=180,                 # Recycle connections more frequently (3 minutes),                 # Recycle connections more frequently (3 minutes)
+    pool_timeout=45,                  # Increased timeout for cloud environments,                  # Increase connection timeout for cloud environments
+    pool_size=10,                     # Increased pool size for better concurrency,                     # Increase pool size for better handling of concurrent requests
+    max_overflow=20,           # Allow more overflow connections for spikes,                  # Allow more overflow connections
     connect_args=connect_args         # Database-specific connection arguments
 )
 
@@ -177,10 +183,10 @@ def get_async_engine(database_url=None):
             echo=settings.debug,
             future=True,
             pool_pre_ping=True,
-            pool_recycle=300,
-            pool_timeout=30,
-            pool_size=5,
-            max_overflow=10
+            pool_recycle=180,                 # Recycle connections more frequently (3 minutes),
+            pool_timeout=45,                  # Increased timeout for cloud environments,
+            pool_size=10,                     # Increased pool size for better concurrency,
+            max_overflow=20,           # Allow more overflow connections for spikes
         )
     # Otherwise, return the global engine
     return engine

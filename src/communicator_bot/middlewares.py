@@ -62,30 +62,37 @@ class DatabaseMiddleware(BaseMiddleware):
         logger.info(f"Using database URL (starts with): {db_url[:15] if db_url else 'None'}...")
         
         # Create connection arguments
-        connect_args = {}
+        connect_args = {
+        "command_timeout": 30,  # Command execution timeout
+        "timeout": 30,  # Increased connection timeout,
+        "statement_cache_size": 0  # Disable statement cache
+    }
         if 'postgresql' in db_url or 'postgres' in db_url:
             # PostgreSQL specific connect args for asyncpg
             connect_args = {
-                "timeout": 10,  # Connection timeout in seconds
+                "timeout": 30,              # Increased connection timeout to 30 seconds
+                "command_timeout": 30,      # Added command timeout of 30 seconds
                 "server_settings": {
-                    "application_name": "allkinds-communicator"
-                }
+                    "application_name": "allkinds-communicator",
+        "statement_cache_size": 0  # Disable statement cache
+    },
+                "statement_cache_size": 0   # Disable statement cache for more reliable connections
             }
             logger.info("Using PostgreSQL connection settings with asyncpg driver")
         else:
             logger.warning(f"Not using PostgreSQL: {db_url.split('://')[0]}")
         
-        # Create the engine with the same configuration as the main bot
+        # Create the engine with improved configuration for Railway
         try:
             self.engine = create_async_engine(
                 db_url,
                 echo=False,
                 future=True,
                 pool_pre_ping=True,
-                pool_recycle=300,
-                pool_timeout=30,
-                pool_size=5,
-                max_overflow=10,
+                pool_recycle=180,                 # Recycle connections more frequently (3 minutes),          # Recycle connections more frequently (3 minutes)
+                pool_timeout=45,                  # Increased timeout for cloud environments,           # Increased timeout for cloud environments
+                pool_size=10,                     # Increased pool size for better concurrency,              # Increased pool size for better concurrency
+                max_overflow=20,           # Allow more overflow connections for spikes,           # Allow more overflow connections
                 connect_args=connect_args
             )
             

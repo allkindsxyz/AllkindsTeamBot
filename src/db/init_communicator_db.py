@@ -82,14 +82,21 @@ if DB_URL is None:
 logger.info(f"Using database: {DB_URL[:15]}...")
 
 # Create async engine with enhanced parameters
-connect_args = {}
+connect_args = {
+        "command_timeout": 30,  # Command execution timeout
+        "timeout": 30,  # Increased connection timeout,
+        "statement_cache_size": 0  # Disable statement cache
+    }
 if 'postgresql' in DB_URL or 'postgres' in DB_URL:
     # PostgreSQL specific connect args for asyncpg
     connect_args = {
-        "timeout": 10,  # Connection timeout in seconds
+        "command_timeout": 30,  # Command execution timeout
+        "timeout": 30,  # Connection timeout in seconds
         "server_settings": {
-            "application_name": "allkinds-communicator-init"
-        }
+        "command_timeout": 30,  # Command execution timeout
+            "application_name": "allkinds-communicator-init",
+        "statement_cache_size": 0  # Disable statement cache
+    }
     }
     logger.info("Using PostgreSQL connection arguments")
 
@@ -100,10 +107,10 @@ try:
         echo=True,
         future=True,
         pool_pre_ping=True,
-        pool_recycle=300,
-        pool_timeout=30,
-        pool_size=5,
-        max_overflow=10,
+        pool_recycle=180,                 # Recycle connections more frequently (3 minutes),
+        pool_timeout=45,                  # Increased timeout for cloud environments,
+        pool_size=10,                     # Increased pool size for better concurrency,
+        max_overflow=20,           # Allow more overflow connections for spikes,
         connect_args=connect_args
     )
     logger.info("Engine created successfully")

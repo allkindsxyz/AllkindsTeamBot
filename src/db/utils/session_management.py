@@ -48,9 +48,9 @@ async def ensure_active_session(session: AsyncSession) -> AsyncSession:
         raise
 
 def with_retry(
-    max_attempts: int = 3,
-    base_delay: float = 0.5,
-    max_delay: float = 5.0
+    max_attempts: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 10.0
 ) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
     """
     Decorator to retry async database operations with exponential backoff.
