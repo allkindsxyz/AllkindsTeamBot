@@ -19,7 +19,7 @@ from src.db.utils.session_management import ensure_active_session, with_retry
 
 # Get settings for constants
 settings = get_settings()
-IS_RAILWAY = settings.is_railway
+# Use IS_RAILWAY directly from diagnostics module
 
 
 @track_db
