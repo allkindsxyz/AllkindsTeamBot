@@ -9940,21 +9940,6 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         logger.info(f"Deducted {FIND_MATCH_COST} points from user {db_user.id}, new balance: {db_user.points} (was {old_points})")
         
         # We already have match results, no need to find matches again
-        except Exception as match_error:
-            logger.error(f"Error in find_matches call: {str(match_error)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            
-            # Refund points since there was an error
-            db_user.points += FIND_MATCH_COST
-            session.add(db_user)
-            await session.commit()
-            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
-            
-            await message.answer("❌ An error occurred while finding matches. Please try again later.")
-            await show_group_menu(message, group_id, group.name, state, session=session)
-            return
-        
         if not match_results or len(match_results) == 0:
             # No matches found
             logger.info(f"No matches found for user {db_user.id} in group {group_id}")
