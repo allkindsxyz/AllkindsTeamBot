@@ -4927,7 +4927,8 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                 confirmation_text += "\n"
             
             # Add hidden group ID for context recovery if needed
-            confirmation_text += f"<span class='hidden'>group_id:{group_id}</span>"
+            # Removed HTML tag that caused Telegram errors
+        # confirmation_text += f\"<span class='hidden'>group_id:{group_id}</span>\"
             
             # Get nickname and photo for the matched user
             try:
@@ -10016,7 +10017,8 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
             confirmation_text += "\n"
         
         # Add hidden group ID for context recovery if needed
-        confirmation_text += f"<span class='hidden'>group_id:{group_id}</span>"
+        # Removed HTML tag that caused Telegram errors
+        # confirmation_text += f\"<span class='hidden'>group_id:{group_id}</span>\"
         
         # Try to get the nickname and photo for the matched user
         matched_user_nickname = None
