@@ -5025,6 +5025,59 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
 
 
 async def handle_add_question_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle the 'Add Question' button from the reply keyboard."""
+    logger.info(f"User {message.from_user.id} pressed Add Question button")
+    
+    # Get current data
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    
+    if not group_id:
+        await message.answer("Please select a group first.")
+        return
+        
+    # Get the user from the database
+    user_tg = message.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    
+    if not db_user:
+        logger.error(f"User with Telegram ID {user_tg.id} not found in database")
+        await message.answer("Error: Your user account was not found. Please try /start again.")
+        return
+    
+    # Get the group from the database
+    group = await group_repo.get(session, int(group_id))
+    if not group:
+        logger.error(f"Group {group_id} not found in database")
+        await message.answer("Group not found. Please restart by clicking on the group link.")
+        return
+    
+    # Set state to QuestionFlow.waiting_for_question
+    await state.set_state(QuestionFlow.waiting_for_question)
+    
+    # Store group_id in state
+    await state.update_data(current_group_id=group_id)
+    
+    # Send instructions
+    await message.answer(
+        "Please enter your yes/no question.
+
+"
+        "Good questions should be:
+"
+        "• Clear and concise
+"
+        "• Answerable with yes/no
+"
+        "• Related to values or preferences
+
+"
+        "Example: \"Do you believe in giving second chances?\"
+
+"
+        "Type /cancel to cancel."
+    )
+
 from aiogram import Dispatcher, F, types, Bot
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
