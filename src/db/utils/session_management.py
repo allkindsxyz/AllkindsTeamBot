@@ -8,7 +8,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError, DatabaseError
 
-from src.db.session import get_db
+from src.db.base import get_session, async_session_factory
 
 T = TypeVar('T')
 
@@ -20,8 +20,8 @@ async def get_fresh_session() -> AsyncSession:
         A new AsyncSession object.
     """
     try:
-        # Using the existing get_db function as an async generator
-        async for session in get_db():
+        # Using the existing get_session function as an async generator
+        async for session in get_session():
             return session
     except Exception as e:
         logger.error(f"Error creating new database session: {e}")
