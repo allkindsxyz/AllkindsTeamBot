@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy import BigInteger, Boolean, DateTime, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -60,6 +60,9 @@ class User(Base):
     # User blocking relationships
     blocked_users = relationship("BlockedUser", foreign_keys="BlockedUser.user_id", back_populates="user")
     blocked_by = relationship("BlockedUser", foreign_keys="BlockedUser.blocked_user_id", back_populates="blocked_user")
+    
+    # User state persistence
+    states: Mapped[List["UserState"]] = relationship("UserState", back_populates="user")
     
     def __repr__(self) -> str:
         return f"<User {self.id} ({self.telegram_id}): {self.first_name}>" 

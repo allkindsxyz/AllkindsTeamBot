@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
-from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from datetime import datetime
+from typing import Optional
+from sqlalchemy import Text, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
 
@@ -12,12 +13,12 @@ class UserState(Base):
     """
     __tablename__ = "user_states"
     
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    state_data = Column(Text, nullable=False)  # JSON-serialized state data
-    created_at = Column(DateTime, nullable=False, default=func.now())
-    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
-    expires_at = Column(DateTime, nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    state_data: Mapped[str] = mapped_column(Text, nullable=False)  # JSON-serialized state data
+    created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
     
     # Relationships
-    user = relationship("User", back_populates="states") 
+    user: Mapped["User"] = relationship("User", back_populates="states") 
