@@ -30,9 +30,8 @@ async def init_db(max_retries=5, retry_delay=2):
             "timeout": 30,             # Increased connection timeout to 30 seconds
             "command_timeout": 30,     # Added command timeout of 30 seconds
             "server_settings": {
-                "application_name": "allkinds_init",
-        "statement_cache_size": 0  # Disable statement cache
-    },
+                "application_name": "allkinds_init"
+            },
             "statement_cache_size": 0  # Disable statement cache for more reliable connections
         }
     

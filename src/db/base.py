@@ -119,9 +119,8 @@ if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_
         "timeout": 30,             # Increase connection timeout to 30 seconds
         "command_timeout": 30,     # Add command timeout of 30 seconds
         "server_settings": {
-            "application_name": "allkinds",
-        "statement_cache_size": 0  # Disable statement cache
-    },
+            "application_name": "allkinds"
+        },
         "statement_cache_size": 0  # Disable statement cache to avoid issues with long-running connections
     }
 

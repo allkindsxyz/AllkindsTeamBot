@@ -88,15 +88,14 @@ connect_args = {
         "statement_cache_size": 0  # Disable statement cache
     }
 if 'postgresql' in DB_URL or 'postgres' in DB_URL:
-    # PostgreSQL specific connect args for asyncpg
+    # PostgreSQL specific connect args for asyncpg with more generous timeouts
     connect_args = {
-        "command_timeout": 30,  # Command execution timeout
-        "timeout": 30,  # Connection timeout in seconds
+        "timeout": 30,             # Increased connection timeout
+        "command_timeout": 30,     # Added command timeout
         "server_settings": {
-        "command_timeout": 30,  # Command execution timeout
-            "application_name": "allkinds-communicator-init",
-        "statement_cache_size": 0  # Disable statement cache
-    }
+            "application_name": "allkinds-communicator-init"
+        },
+        "statement_cache_size": 0  # Disable statement cache for more reliable connections
     }
     logger.info("Using PostgreSQL connection arguments")
 

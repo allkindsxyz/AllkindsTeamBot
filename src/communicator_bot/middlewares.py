@@ -73,9 +73,8 @@ class DatabaseMiddleware(BaseMiddleware):
                 "timeout": 30,              # Increased connection timeout to 30 seconds
                 "command_timeout": 30,      # Added command timeout of 30 seconds
                 "server_settings": {
-                    "application_name": "allkinds-communicator",
-        "statement_cache_size": 0  # Disable statement cache
-    },
+                    "application_name": "allkinds-communicator"
+                },
                 "statement_cache_size": 0   # Disable statement cache for more reliable connections
             }
             logger.info("Using PostgreSQL connection settings with asyncpg driver")
