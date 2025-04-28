@@ -12,101 +12,16 @@ from src.db.repositories.user import user_repo
 
 
 class DatabaseMiddleware(BaseMiddleware):
-    """Middleware to inject database session into handler."""
+    \"\"\"Middleware for handling database connections with proper error handling and timeouts.\"\"\"
     
     def __init__(self):
-        """Initialize the middleware."""
-        # Use the same database configuration as the main bot
-        self.settings = get_settings()
-        
-        # RAILWAY_ENVIRONMENT will be set to 'production' in Railway
-        is_production = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
-        
-        # Get database URL from environment - SAME AS MAIN BOT
-        db_url = os.environ.get("DATABASE_URL", self.settings.db_url)
-        logger.info(f"Original database URL (starts with): {db_url[:15] if db_url else 'None'}...")
-        
-        # Process the database URL - same logic as the main bot
-        if db_url.startswith('postgres://'):
-            # For asyncpg, replace postgres:// with postgresql+asyncpg://
-            db_url = db_url.replace('postgres://', 'postgresql+asyncpg://', 1)
-            logger.info(f"Converted postgres:// to postgresql+asyncpg:// for compatibility")
-        elif db_url.startswith('postgresql://'):
-            # Replace postgresql:// with postgresql+asyncpg://
-            db_url = db_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-            logger.info(f"Converted postgresql:// to postgresql+asyncpg:// for compatibility")
-        
-        # Enforce PostgreSQL in production
-        if is_production and not ('postgresql+asyncpg' in db_url):
-            logger.error(f"Production environment requires PostgreSQL! Current URL type: {db_url.split('://')[0]}")
-            logger.warning("Attempting to recover by enforcing PostgreSQL URL format")
-            # Try to force it to use PostgreSQL
-            if 'sqlite' in db_url:
-                # Get from environment again as a last resort
-                fallback_url = os.environ.get("DATABASE_URL")
-                if fallback_url and ('postgres' in fallback_url):
-                    logger.info(f"Recovered PostgreSQL URL from environment")
-                    # Process it again to ensure proper format
-                    if fallback_url.startswith('postgres://'):
-                        db_url = fallback_url.replace('postgres://', 'postgresql+asyncpg://', 1)
-                    elif fallback_url.startswith('postgresql://'):
-                        db_url = fallback_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-                    else:
-                        db_url = fallback_url
-                else:
-                    logger.critical("CRITICAL: Cannot find PostgreSQL URL in production environment!")
-                    # Don't use SQLite in production - this will cause the bot to fail but that's better
-                    # than silently using SQLite and having data inconsistency
-                    raise ValueError("PostgreSQL URL required in production environment")
-        
-        logger.info(f"Using database URL (starts with): {db_url[:15] if db_url else 'None'}...")
-        
-        # Create connection arguments
-        connect_args = {
-        "command_timeout": 30,  # Command execution timeout
-        "timeout": 30,  # Increased connection timeout,
-        "statement_cache_size": 0  # Disable statement cache
-    }
-        if 'postgresql' in db_url or 'postgres' in db_url:
-            # PostgreSQL specific connect args for asyncpg
-            connect_args = {
-                "timeout": 30,              # Increased connection timeout to 30 seconds
-                "command_timeout": 30,      # Added command timeout of 30 seconds
-                "server_settings": {
-                    "application_name": "allkinds-communicator"
-                },
-                "statement_cache_size": 0   # Disable statement cache for more reliable connections
-            }
-            logger.info("Using PostgreSQL connection settings with asyncpg driver")
-        else:
-            logger.warning(f"Not using PostgreSQL: {db_url.split('://')[0]}")
-        
-        # Create the engine with improved configuration for Railway
-        try:
-            self.engine = create_async_engine(
-                db_url,
-                echo=False,
-                future=True,
-                pool_pre_ping=True,
-                pool_recycle=180,                 # Recycle connections more frequently (3 minutes),          # Recycle connections more frequently (3 minutes)
-                pool_timeout=45,                  # Increased timeout for cloud environments,           # Increased timeout for cloud environments
-                pool_size=10,                     # Increased pool size for better concurrency,              # Increased pool size for better concurrency
-                max_overflow=20,           # Allow more overflow connections for spikes,           # Allow more overflow connections
-                connect_args=connect_args
-            )
-            
-            self.session_factory = async_sessionmaker(
-                self.engine,
-                expire_on_commit=False,
-                autoflush=False
-            )
-            
-            logger.info(f"Database engine created successfully: {db_url.split('://')[0]}")
-        except Exception as e:
-            logger.error(f"Failed to create database engine: {e}")
-            raise
+        self.session_pool = {}
+        self.retry_attempts = 3
+        self.session_timeout = 30  # seconds
+        logger.info("Database middleware initialized with retry logic")
+        super().__init__()
     
-    async def __call__(
+    async def __call__
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
@@ -144,56 +59,93 @@ class DatabaseMiddleware(BaseMiddleware):
                     logger.error(f"Failed to close database session: {close_error}")
 
 
-class LoggingMiddleware(BaseMiddleware):
-    """Middleware to log all updates."""
-    
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any],
-    ) -> Any:
-        """Log updates before and after handling."""
-        update = data.get("event_update", Update(update_id=0))
+class LoggingMiddleware(BaseMiddleware:
+        import time
+        import asyncio
+        from sqlalchemy.exc import SQLAlchemyError
         
-        # Get user info if available
-        user_id = None
-        chat_id = None
+        # Create a new session for this request with retry logic
+        session = None
+        engine = None
         
-        if update.message:
-            user_id = update.message.from_user.id if update.message.from_user else None
-            chat_id = update.message.chat.id
-        elif update.callback_query:
-            user_id = update.callback_query.from_user.id if update.callback_query.from_user else None
-            chat_id = update.callback_query.message.chat.id if update.callback_query.message else None
+        # Store original exception if we need to re-raise later
+        original_exc = None
         
-        # Log start of handling
-        logger.info(f"Handling update {update.update_id} from user {user_id} in chat {chat_id}")
+        for attempt in range(self.retry_attempts):
+            try:
+                # Get or create engine with proper error handling
+                try:
+                    engine = get_async_engine()
+                except Exception as e:
+                    logger.error(f"Failed to create database engine: {e}")
+                    raise
+                
+                # Create session with timeout
+                async_session = sessionmaker(
+                    engine, expire_on_commit=False, class_=AsyncSession
+                )
+                
+                # Create session with timeout protection
+                try:
+                    session_task = asyncio.create_task(async_session())
+                    session = await asyncio.wait_for(session_task, timeout=self.session_timeout)
+                    
+                    # Add session to the data dict
+                    data["session"] = session
+                    
+                    # Process handler
+                    result = await handler(event, data)
+                    
+                    # Close session
+                    await session.close()
+                    return result
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Session creation timed out after {self.session_timeout}s (attempt {attempt+1}/{self.retry_attempts})")
+                    if session:
+                        await session.close()
+                    raise
+                    
+            except asyncio.exceptions.CancelledError as e:
+                logger.warning(f"Database connection cancelled (attempt {attempt+1}/{self.retry_attempts}): {e}")
+                original_exc = e
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                    
+            except SQLAlchemyError as e:
+                logger.error(f"Database error (attempt {attempt+1}/{self.retry_attempts}): {e}")
+                original_exc = e
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error in database middleware (attempt {attempt+1}/{self.retry_attempts}): {e}")
+                original_exc = e
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                    
+        # All retries failed
+        logger.critical(f"All database connection attempts failed after {self.retry_attempts} retries")
         
-        # Call the handler
-        result = await handler(event, data)
-        
-        # Log end of handling
-        logger.info(f"Finished handling update {update.update_id}")
-        
-        return result
-
-
-class ChatActivityMiddleware(BaseMiddleware):
-    """Middleware to update chat activity timestamps."""
-    
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any],
-    ) -> Any:
-        """Update last activity timestamp for active chats."""
-        update = data.get("event_update", Update(update_id=0))
-        session = data.get("session")
-        
-        if not session:
-            return await handler(event, data)
+        # In production, we should handle this gracefully for the user
+        try:
+            if isinstance(event, types.Message) and event.text == "/start":
+                # Special handling for /start command to avoid bad user experience
+                await event.answer(
+                    "I'm currently experiencing technical difficulties connecting to the database. "
+                    "Please try again in a few minutes."
+                )
+            return None  # Return None to indicate middleware handled the response
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+            
+        # Re-raise the original exception
+        if original_exc:
+            raise original_exc
+        raise RuntimeError("Failed to establish database connection")
         
         # Get user info if available
         user_id = None

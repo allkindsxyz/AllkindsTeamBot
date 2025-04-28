@@ -154,41 +154,69 @@ def get_engine():
     """Get the SQLAlchemy engine."""
     return engine 
 
-def get_async_engine(database_url=None):
-    """Get the SQLAlchemy async engine, optionally creating a new one with the specified URL."""
-    if database_url:
-        # Create a new engine with the specified URL
-        from sqlalchemy.ext.asyncio import create_async_engine
-        
-        # In production, enforce PostgreSQL
-        if IS_PRODUCTION and not (database_url.startswith('postgres://') or database_url.startswith('postgresql://')):
-            logger.error(f"Invalid database URL in production: {database_url[:15]}...")
-            logger.error("DATABASE_URL must be a PostgreSQL connection in production environment.")
-            sys.exit(1)
-        
-        # Force the use of asyncpg by explicitly replacing the dialect in the URL
-        if database_url.startswith('postgresql://') or database_url.startswith('postgres://'):
-            # Replace 'postgresql://' or 'postgres://' with 'postgresql+asyncpg://'
-            if database_url.startswith('postgresql://'):
-                database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+def get_async_engine(*args, **kwargs):
+    \"\"\"Get SQLAlchemy async engine with retry logic.\"\"\"
+    import time
+    from sqlalchemy.exc import SQLAlchemyError
+    
+    # Get database URL from environment with proper error handling
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        logger.error("DATABASE_URL environment variable is not set")
+        database_url = os.environ.get("POSTGRES_URL")
+        if database_url:
+            logger.info("Using POSTGRES_URL as fallback")
+        else:
+            logger.critical("No database URL found in environment variables!")
+            if IS_RAILWAY:
+                # In production, fail fast
+                raise ValueError("DATABASE_URL environment variable is required")
             else:
-                database_url = database_url.replace('postgres://', 'postgresql+asyncpg://', 1)
-            
-            logger.info(f"Enforcing asyncpg driver with URL: {database_url[:20]}...")
-        
-        # Create the engine with the processed URL
-        return create_async_engine(
-            database_url,
-            echo=settings.debug,
-            future=True,
-            pool_pre_ping=True,
-            pool_recycle=180,                 # Recycle connections more frequently (3 minutes),
-            pool_timeout=45,                  # Increased timeout for cloud environments,
-            pool_size=10,                     # Increased pool size for better concurrency,
-            max_overflow=20,           # Allow more overflow connections for spikes
-        )
-    # Otherwise, return the global engine
-    return engine
+                # In development, use SQLite as a fallback
+                logger.warning("Using SQLite as fallback for development")
+                database_url = "sqlite+aiosqlite:///./test.db"
+    
+    # Force asyncpg driver for PostgreSQL
+    if database_url.startswith('postgresql:'):
+        database_url = database_url.replace('postgresql:', 'postgresql+asyncpg:')
+        logger.info(f"Enforcing asyncpg driver with URL: {database_url[:25]}...")
+    
+    # Set connection parameters with sensible timeouts
+    connect_args = {
+        'timeout': 10,  # Connection timeout in seconds
+        'command_timeout': 10,  # Command execution timeout
+    }
+    
+    # Use a separate pool for statements, with retries
+    engine_args = {
+        'pool_size': 5,  # Start with a smaller pool
+        'max_overflow': 10,
+        'pool_timeout': 30,
+        'pool_recycle': 1800,  # Recycle connections after 30 minutes
+        'pool_pre_ping': True,  # Check connection viability before using
+        'connect_args': connect_args
+    }
+    
+    # Create engine with retry logic
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            engine = create_async_engine(
+                database_url,
+                **engine_args
+            )
+            logger.info(f"Successfully created database engine on attempt {attempt + 1}")
+            return engine
+        except SQLAlchemyError as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}): {e}")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Failed to establish database connection after {max_retries} attempts: {e}")
+                raise
 
 async def init_models(engine):
     """Initialize database models."""
