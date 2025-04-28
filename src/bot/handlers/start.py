@@ -2544,7 +2544,7 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
         # Ensure bot username is valid before creating the link
         if not bot_username or bot_username.strip() == "":
             logger.warning("[DEEP_LINK] Bot username is empty or invalid")
-            bot_username = "AllkindsChat"  # Use fallback
+            bot_username = "AllkindsChatBot"  # Use fallback
             logger.info(f"[DEEP_LINK] Using fallback username: {bot_username}")
             
         deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"
@@ -3412,7 +3412,7 @@ async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMCont
         communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
         # Ensure username is valid before creating the link
         if not communicator_bot_username or communicator_bot_username == "":
-            communicator_bot_username = "AllkindsChat"  # Fallback to a known username
+            communicator_bot_username = "AllkindsChatBot"  # Fallback to a known username
             logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
         
         # Create the deep link with proper validation
@@ -7642,7 +7642,7 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
         # Ensure bot username is valid before creating the link
         if not bot_username or bot_username.strip() == "":
             logger.warning("[DEEP_LINK] Bot username is empty or invalid")
-            bot_username = "AllkindsChat"  # Use fallback
+            bot_username = "AllkindsChatBot"  # Use fallback
             logger.info(f"[DEEP_LINK] Using fallback username: {bot_username}")
             
         deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"
@@ -8509,7 +8509,7 @@ async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMCont
         communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
         # Ensure username is valid before creating the link
         if not communicator_bot_username or communicator_bot_username == "":
-            communicator_bot_username = "AllkindsChat"  # Fallback to a known username
+            communicator_bot_username = "AllkindsChatBot"  # Fallback to a known username
             logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
         
         # Create the deep link with proper validation
