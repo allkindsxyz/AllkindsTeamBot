@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
 import threading
 from aiohttp import web
+from aiogram import types
 
 from src.communicator_bot.handlers import register_handlers
 from src.core.config import get_settings
@@ -123,6 +124,42 @@ async def reset_webhook():
     except Exception as e:
         logger.error(f"Error with direct webhook reset: {e}")
         return False
+    
+    # Try again with direct HTTP request as fallback
+    try:
+        import requests
+        logger.info("Trying reset webhook with direct HTTP request as fallback...")
+        response = requests.get(
+            f"https://api.telegram.org/bot{COMMUNICATOR_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        )
+        result = response.json()
+        if result.get("ok"):
+            logger.info("Webhook deleted successfully with direct HTTP request")
+            return True
+        else:
+            logger.error(f"Failed to delete webhook with direct request: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"Error with direct webhook reset: {e}")
+        return False
+    
+    # Try again with direct HTTP request as fallback
+    try:
+        import requests
+        logger.info("Trying reset webhook with direct HTTP request as fallback...")
+        response = requests.get(
+            f"https://api.telegram.org/bot{COMMUNICATOR_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        )
+        result = response.json()
+        if result.get("ok"):
+            logger.info("Webhook deleted successfully with direct HTTP request")
+            return True
+        else:
+            logger.error(f"Failed to delete webhook with direct request: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"Error with direct webhook reset: {e}")
+        return False
         
     try:
         logger.info("Resetting Telegram webhook...")
@@ -167,6 +204,60 @@ async def reset_webhook():
     except Exception as e:
         logger.error(f"Error resetting webhook: {e}")
         return False
+
+async def setup_webhook_server():
+    """Set up a web server for webhooks and health checks."""
+    try:
+        port = int(os.environ.get("WEBAPP_PORT", 8082))
+        logger.info(f"Setting up webhook server on port {port}")
+        
+        app = web.Application()
+        
+        async def ping_handler(request):
+            """Simple ping handler for health checks."""
+            return web.Response(text='{"status":"ok","service":"communicator_bot"}', 
+                               content_type='application/json')
+                               
+        async def webhook_handler(request):
+            """Handle webhook updates from Telegram."""
+            if request.content_type != 'application/json':
+                return web.Response(status=415, text='Only JSON is accepted')
+                
+            try:
+                data = await request.read()
+                logger.info(f"Received webhook update: {len(data)} bytes")
+                
+                # Process update with the bot
+                update = types.Update.model_validate_json(data)
+                await dp.feed_update(bot=bot, update=update)
+                
+                return web.Response(text='{"ok":true}', content_type='application/json')
+            except Exception as e:
+                logger.error(f"Error processing webhook update: {e}")
+                return web.Response(text='{"ok":false,"error":"Internal Server Error"}', 
+                                   content_type='application/json', status=500)
+        
+        # Add routes
+        app.router.add_get("/ping", ping_handler)
+        app.router.add_post("/webhook", webhook_handler)
+        
+        # Start the server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        
+        logger.info(f"Webhook server running on http://0.0.0.0:{port}")
+        
+        # Keep running until signal to exit
+        while not should_exit:
+            await asyncio.sleep(1)
+            
+        # Cleanup
+        logger.info("Shutting down webhook server")
+        await runner.cleanup()
+    except Exception as e:
+        logger.error(f"Error setting up webhook server: {e}")
 
 async def shutdown(signal_name=None):
     """Shutdown the bot gracefully."""
@@ -239,6 +330,27 @@ async def start_communicator_bot() -> None:
 
         # Verify token by getting bot info
         try:
+            # Check for bot username in environment
+            bot_username = os.environ.get("COMMUNICATOR_BOT_USERNAME", "")
+            if not bot_username:
+                from src.core.config import get_settings
+                settings = get_settings()
+                bot_username = settings.COMMUNICATOR_BOT_USERNAME
+                logger.info(f"Using bot username from settings: {bot_username}")
+            else:
+                logger.info(f"Using bot username from environment: {bot_username}")
+                
+            # Remove @ if it's included
+            if bot_username and bot_username.startswith("@"):
+                bot_username = bot_username[1:]
+                logger.info(f"Removed @ prefix from bot username: {bot_username}")
+                
+            # Log token information for debugging (safely)
+            if COMMUNICATOR_BOT_TOKEN:
+                token_prefix = COMMUNICATOR_BOT_TOKEN[:4] if len(COMMUNICATOR_BOT_TOKEN) > 4 else "N/A"
+                logger.info(f"Bot token available (prefix: {token_prefix}...)")
+            else:
+                logger.error("Bot token is empty or not set!")
             # Check for bot username in environment
             bot_username = os.environ.get("COMMUNICATOR_BOT_USERNAME", "")
             if not bot_username:
@@ -389,6 +501,10 @@ async def start_communicator_bot() -> None:
                 await health_server_task
             except asyncio.CancelledError:
                 logger.info("Health server task cancelled")
+
+    # Start webhook server in a separate task
+    webhook_server_task = asyncio.create_task(setup_webhook_server())
+    logger.info("Webhook server task created")
 
 def setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""

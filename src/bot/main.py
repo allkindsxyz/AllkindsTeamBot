@@ -383,41 +383,107 @@ def register_all_handlers(dp: Dispatcher):
     register_handlers(dp)
     logger.info("All handlers registered successfully")
 
-
-async def main():
-    """Main entry point for the bot."""
-    logger.info("==================================================")
-    logger.info(f"Starting AllkindsTeamBot at {datetime.now(timezone.utc).isoformat()}")
-    logger.info(f"Running in {'Railway' if IS_RAILWAY else 'Local'} environment")
-    
-    # Check if another instance is running
-    if not check_lock_file():
-        logger.error("Bot is already running, exiting")
-        return
-    
+async def setup_ping_server():
+    """Setup a simple ping server for health checks on the specified port."""
     try:
-        # Check for database migrations
-        if not os.environ.get("SKIP_DB_INIT"):
-            engine = get_async_engine(settings.db_url)
-            await init_models(engine)
-            logger.info("Database initialized")
-            
-            # Run startup tasks for database integrity
-            logger.info("Running startup integrity checks...")
-            await run_startup_tasks()
+        # Get port from environment or use default
+        port = int(os.environ.get("WEBAPP_PORT", 8081))
+        logger.info(f"Setting up ping server on port {port}")
         
-        # Decide between webhook and polling modes
-        if settings.USE_WEBHOOK:
-            await run_webhook_bot()
-        else:
-            await run_polling_bot()
+        # Create a simple app with a ping endpoint
+        app = web.Application()
+        
+        async def ping_handler(request):
+            """Simple ping handler for health checks."""
+            return web.Response(text='{"status":"ok"}', content_type='application/json')
+            
+        async def webhook_handler(request):
+            """Webhook handler that logs requests."""
+            try:
+                body = await request.read()
+                logger.info(f"Received webhook request: {len(body)} bytes")
+                # Process webhook with bot's dispatcher
+                await process_webhook_update(body)
+                return web.Response(text='{"ok":true}', content_type='application/json')
+            except Exception as e:
+                logger.error(f"Error processing webhook: {e}")
+                return web.Response(text='{"ok":false,"error":"Internal Server Error"}', 
+                                   content_type='application/json', status=500)
+        
+        # Add routes
+        app.router.add_get("/ping", ping_handler)
+        app.router.add_post("/webhook", webhook_handler)
+        
+        # Start the server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        
+        logger.info(f"Ping server running on http://0.0.0.0:{port}/ping")
+        
+        # Keep the server running
+        while True:
+            await asyncio.sleep(3600)  # Sleep for an hour
     except Exception as e:
-        logger.error(f"Critical error in main function: {e}")
+        logger.error(f"Error setting up ping server: {e}")
+        
+async def process_webhook_update(data):
+    """Process a webhook update with the bot's dispatcher."""
+    global dp, bot
+    
+    if not dp or not bot:
+        logger.error("Dispatcher or bot not initialized. Cannot process webhook.")
+        return
+        
+    try:
+        update = types.Update.model_validate_json(data)
+        await dp.feed_update(bot=bot, update=update)
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}")
+        
+async def main():
+    """Main function to initialize and start the bot."""
+    try:
+        # Display diagnostic information at startup
+        diagnostics = get_diagnostics_report()
+        logger.info(f"=== SYSTEM INFO ===\n{diagnostics}")
+        
+        # Start ping server in a separate task
+        ping_server_task = asyncio.create_task(setup_ping_server())
+        logger.info("Ping server task created")
+        
+        # Check if another instance is running
+        if not check_lock_file():
+            logger.error("Bot is already running, exiting")
+            return
+        
+        try:
+            # Check for database migrations
+            if not os.environ.get("SKIP_DB_INIT"):
+                engine = get_async_engine(settings.db_url)
+                await init_models(engine)
+                logger.info("Database initialized")
+                
+                # Run startup tasks for database integrity
+                logger.info("Running startup integrity checks...")
+                await run_startup_tasks()
+            
+            # Decide between webhook and polling modes
+            if settings.USE_WEBHOOK:
+                await run_webhook_bot()
+            else:
+                await run_polling_bot()
+        except Exception as e:
+            logger.error(f"Critical error in main function: {e}")
+            traceback.print_exc()
+        finally:
+            remove_lock_file()
+            logger.info(f"Bot stopped at {datetime.now(timezone.utc).isoformat()}")
+            logger.info("==================================================")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
         traceback.print_exc()
-    finally:
-        remove_lock_file()
-        logger.info(f"Bot stopped at {datetime.now(timezone.utc).isoformat()}")
-        logger.info("==================================================")
 
 if __name__ == "__main__":
     # Start the bot
