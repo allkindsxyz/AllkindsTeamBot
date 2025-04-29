@@ -56,6 +56,12 @@ IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
 # Lock file path
 LOCK_FILE = "bot.lock"
 
+# Add the start_bot function that is imported by src/main.py
+async def start_bot():
+    """Entry point for starting the bot, called from src/main.py"""
+    logger.info("Starting bot via start_bot function")
+    await main()
+
 def check_lock_file():
     """Check if the lock file exists and if the process is still running."""
     if os.path.exists(LOCK_FILE):
