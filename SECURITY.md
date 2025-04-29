@@ -45,11 +45,11 @@ The following environment variables should be configured in your deployment envi
 For local development, create a `.env` file in the project root with the required variables:
 
 ```
-DATABASE_URL=postgresql://user:password@localhost:5432/dbname
-BOT_TOKEN=123456789:ABCDefGhIJKlmnOPQRsTUVwxyZ
-OPENAI_API_KEY=sk-...
-PINECONE_API_KEY=...
-PINECONE_ENVIRONMENT=...
+DATABASE_URL=postgresql://username:password@localhost:5432/dbname
+BOT_TOKEN=your_telegram_bot_token_here
+OPENAI_API_KEY=your_openai_api_key_here
+PINECONE_API_KEY=your_pinecone_api_key_here
+PINECONE_ENVIRONMENT=your_pinecone_environment_here
 ADMIN_IDS=123456789,987654321
 ```
 

@@ -1,1 +1,0 @@
-        logger.exception("Main bot exited due to an error:")
