@@ -1,1 +1,1 @@
-web: python -m src.main & python -m src.communicator_bot.main & python -m src.health & wait
+web: python -m src.health & sleep 5 && python -m src.main & python -m src.communicator_bot.main & wait

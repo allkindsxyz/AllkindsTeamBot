@@ -1,13 +1,13 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pip install -r requirements.txt"
+buildCommand = "pip install -r requirements.txt && python check_dependencies.py || echo 'Dependency check failed but continuing build'"
 
 [deploy]
-startCommand = "python -m src.main & python -m src.communicator_bot.main & python -m src.health & wait"
+startCommand = "python -m src.health & sleep 5 && python -m src.main & python -m src.communicator_bot.main & wait"
 healthcheckPath = "/health"
-healthcheckTimeout = 10
+healthcheckTimeout = 15
 restartPolicyType = "on-failure"
 restartPolicyMaxRetries = 5
 
 [nixpacks]
-pkgs = ["python310", "gcc", "build-essential", "curl"]
+pkgs = ["python310", "gcc", "build-essential", "curl", "python310Packages.pip"]

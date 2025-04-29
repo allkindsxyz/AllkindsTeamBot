@@ -16,9 +16,9 @@ aiohttp>=3.9.0
 requests>=2.31.0
 redis>=5.0.1
 
-fastapi>=0.95.0
-
-uvicorn>=0.21.0
+# Web framework dependencies - explicitly required for Railway
+fastapi==0.110.0
+uvicorn==0.25.0
 
 gunicorn>=21.2.0
 anyio>=4.0.0

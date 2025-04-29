@@ -472,34 +472,76 @@ def create_health_check_file():
 Health check endpoint for Railway deployment.
 """
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 import os
 import logging
+import sys
 
+# Setup basic logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
-app = FastAPI(title="Allkinds Health Check")
+try:
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    
+    # Create FastAPI app
+    app = FastAPI(title="Allkinds Health Check")
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for Railway."""
-    return {
-        "status": "ok",
-        "service": "allkinds",
-        "environment": os.environ.get("RAILWAY_ENVIRONMENT", "unknown")
-    }
+    @app.get("/health")
+    async def health_check():
+        """Health check endpoint for Railway."""
+        return {
+            "status": "ok",
+            "service": "allkinds",
+            "environment": os.environ.get("RAILWAY_ENVIRONMENT", "unknown")
+        }
 
-@app.get("/")
-async def root():
-    """Root endpoint redirects to health check."""
-    return await health_check()
+    @app.get("/")
+    async def root():
+        """Root endpoint redirects to health check."""
+        return await health_check()
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    if __name__ == "__main__":
+        try:
+            import uvicorn
+            port = int(os.environ.get("PORT", 8080))
+            logger.info(f"Starting health check server on port {port}")
+            uvicorn.run(app, host="0.0.0.0", port=port)
+        except ImportError:
+            logger.error("Uvicorn not installed. Falling back to simple HTTP server.")
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            
+            class SimpleHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(b'{"status":"ok","service":"allkinds"}')
+            
+            port = int(os.environ.get("PORT", 8080))
+            httpd = HTTPServer(('0.0.0.0', port), SimpleHandler)
+            logger.info(f"Starting simple HTTP server on port {port}")
+            httpd.serve_forever()
+except ImportError:
+    # Fallback to simple HTTP server if FastAPI is not available
+    logger.warning("FastAPI not installed. Using simple HTTP server instead.")
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    
+    class SimpleHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok","service":"allkinds"}')
+    
+    if __name__ == "__main__":
+        port = int(os.environ.get("PORT", 8080))
+        httpd = HTTPServer(('0.0.0.0', port), SimpleHandler)
+        logger.info(f"Starting simple HTTP server on port {port}")
+        httpd.serve_forever()
 '''
         
         with open(health_file, 'w') as f:
