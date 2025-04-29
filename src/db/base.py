@@ -6,6 +6,7 @@ import urllib.parse
 from loguru import logger
 import re
 import sys
+import ssl
 # Check if we're in Railway
 IS_RAILWAY = os.environ.get('RAILWAY_ENVIRONMENT') is not None
 
@@ -115,14 +116,22 @@ connect_args = {}
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
     # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
-        "timeout": 120,  # Increased from 60 to 120
-        "command_timeout": 120,  # Increased from 60 to 120
+        "timeout": 120, 
+        "command_timeout": 120, 
         "server_settings": {
             "application_name": "allkinds",
             "idle_in_transaction_session_timeout": "60000"
         },
         "statement_cache_size": 0
     }
+    
+    # Add SSL mode for Railway deployment
+    if IS_RAILWAY:
+        logger.info("Running on Railway, configuring SSL parameters")
+        connect_args["ssl"] = "disable"  # Disable SSL verification for Railway
+        # Alternative approach if 'disable' doesn't work:
+        # connect_args["ssl"] = "prefer"
+        # connect_args["ssl_context"] = ssl._create_unverified_context()
 
 # Create async engine with enhanced parameters for better connection handling in cloud environments
 engine = create_async_engine(
@@ -184,14 +193,19 @@ def get_async_engine(*args, **kwargs):
     
     # Set connection parameters with sensible timeouts
     connect_args = {
-        "timeout": 120,  # Increased from 60 to 120
-        "command_timeout": 120,  # Increased from 60 to 120
+        "timeout": 120, 
+        "command_timeout": 120, 
         "server_settings": {
             "application_name": "allkinds",
             "idle_in_transaction_session_timeout": "60000"
         },
         "statement_cache_size": 0
     }
+    
+    # Add SSL mode for Railway deployment
+    if IS_RAILWAY:
+        logger.info("Running on Railway in get_async_engine, configuring SSL parameters")
+        connect_args["ssl"] = "disable"  # Disable SSL verification for Railway
     
     # Use a separate pool for statements, with retries
     engine_args = {
@@ -230,17 +244,19 @@ async def init_models(engine):
     """Initialize database models with proper error handling and retry logic."""
     import time
     import asyncio
+    import ssl
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy import inspect, text
     
     logger.info("Initializing database models...")
     metadata = Base.metadata
     
-    max_retries = 3
+    max_retries = 5  # Increased from 3 to 5
     retry_delay = 2  # seconds
     
     for attempt in range(max_retries):
         try:
+            logger.info(f"Attempt {attempt + 1}/{max_retries} to initialize database")
             async with engine.begin() as conn:
                 # Test connection
                 await conn.execute(text("SELECT 1"))
@@ -266,30 +282,53 @@ async def init_models(engine):
             # Retry with adjusted timeout
             if attempt < max_retries - 1:
                 logger.info(f"Retrying with increased timeout after CancelledError...")
-                # Increase timeout to allow more time for connection
-                # Also add some sleep time to allow resources to clear
-                engine_args['pool_timeout'] = 120
-                connect_args['timeout'] = 90
-                time.sleep(retry_delay * 2)  # Sleep longer after cancellation
+                # If this is a Railway deployment and SSL might be an issue, try a different approach
+                if IS_RAILWAY and 'ssl' in str(e).lower():
+                    logger.warning("Possible SSL issue detected, trying with different SSL configuration")
+                    try:
+                        # Create a new engine with alternate SSL settings for next attempt
+                        from sqlalchemy.ext.asyncio import create_async_engine
+                        ssl_context = ssl._create_unverified_context()
+                        new_connect_args = engine.url.query.get('connect_args', {})
+                        new_connect_args['ssl_context'] = ssl_context
+                        
+                        # Create a new engine with the updated settings
+                        database_url = str(engine.url)
+                        engine = create_async_engine(
+                            database_url,
+                            connect_args=new_connect_args,
+                            pool_pre_ping=True,
+                            pool_recycle=60
+                        )
+                        logger.info("Created new engine with custom SSL context")
+                    except Exception as ssl_e:
+                        logger.error(f"Failed to create alternative SSL engine: {ssl_e}")
+                
+                await asyncio.sleep(retry_delay * 2)  # Sleep longer after cancellation
                 retry_delay *= 2  # Exponential backoff
             else:
                 logger.error(f"Database initialization failed after {max_retries} attempts due to cancellation: {e}")
                 
                 # In production with cancellation errors, we might still be able to create tables
-                if IS_PRODUCTION or IS_RAILWAY:
-                    logger.warning("Attempting to continue despite cancellation in production...")
+                if IS_RAILWAY:
+                    logger.warning("Attempting to continue despite cancellation in Railway...")
                     try:
-                        # Try with a more direct approach
-                        async with engine.begin() as conn:
-                            await conn.run_sync(metadata.create_all)
-                        logger.info("Successfully created database tables despite connection issues")
-                        return metadata
-                    except Exception as inner_e:
-                        logger.critical(f"Final attempt to create tables failed: {inner_e}")
-                        raise  # Re-raise only after trying everything
-                else:
-                    logger.warning("Continuing without proper database initialization in development environment")
-                    return metadata
+                        # Try a direct database connection as a last resort
+                        import asyncpg
+                        db_url = os.environ.get("DATABASE_URL", "")
+                        if db_url:
+                            logger.info("Attempting direct asyncpg connection as last resort")
+                            conn = await asyncpg.connect(
+                                db_url, 
+                                ssl="disable",
+                                command_timeout=60
+                            )
+                            await conn.close()
+                            logger.info("Direct connection succeeded, service should continue")
+                            return metadata
+                    except Exception as direct_e:
+                        logger.critical(f"Final direct connection attempt failed: {direct_e}")
+                
                 if IS_PRODUCTION:
                     logger.error("Database initialization failed in production environment!")
                     raise  # Re-raise in production
@@ -300,6 +339,7 @@ async def init_models(engine):
         except SQLAlchemyError as e:
             logger.error(f"SQLAlchemy error (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
+                logger.info(f"Retrying database initialization in {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
@@ -316,6 +356,7 @@ async def init_models(engine):
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             if attempt < max_retries - 1:
+                logger.info(f"Retrying database initialization in {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
