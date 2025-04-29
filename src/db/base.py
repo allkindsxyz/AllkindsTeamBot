@@ -7,9 +7,9 @@ from loguru import logger
 import re
 import sys
 import ssl
+
 # Check if we're in Railway
 IS_RAILWAY = os.environ.get('RAILWAY_ENVIRONMENT') is not None
-
 
 from src.core.config import get_settings
 
@@ -88,10 +88,143 @@ def process_database_url(url):
             
         logger.info("Falling back to SQLite database")
         return "sqlite+aiosqlite:///./allkinds.db"
-try:
+
+# Process the database URL
+SQLALCHEMY_DATABASE_URL = process_database_url(ORIGINAL_DB_URL)
+logger.info(f"Final database URL type: {type(SQLALCHEMY_DATABASE_URL)}")
+logger.info(f"Using database driver: {SQLALCHEMY_DATABASE_URL.split('://')[0]}")
+
+# Naming convention for constraints
+convention = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+metadata = MetaData(naming_convention=convention)
+
+
+class Base(DeclarativeBase):
+    """Base class for all models."""
+    metadata = metadata
+
+
+# Set connect_args based on database type
+connect_args = {}
+if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
+    # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
+    connect_args = {
+        "timeout": 60, 
+        "command_timeout": 60, 
+        "server_settings": {
+            "application_name": "allkinds",
+            "idle_in_transaction_session_timeout": "60000"
+        },
+        "statement_cache_size": 0
+    }
+    
+    # Add SSL mode for Railway deployment
+    if IS_RAILWAY:
+        logger.info("Running on Railway, configuring SSL parameters")
+        # Use prefer mode without the context - this is what asyncpg supports
+        connect_args["ssl"] = "prefer"
+        logger.info("Configured SSL parameters: prefer mode")
+
+# Create async engine with enhanced parameters for better connection handling in cloud environments
+engine = create_async_engine(
+    SQLALCHEMY_DATABASE_URL,
+    echo=settings.debug,
+    future=True,
+    pool_pre_ping=True,               # Verify connections before using them
+    pool_recycle=60,                  # Recycle connections more frequently (1 minute)
+    pool_timeout=120,                 # Increased timeout for cloud environments
+    pool_size=3,                      # Smaller pool size for better stability
+    max_overflow=5,                   # Fewer overflow connections to prevent resource exhaustion
+    pool_use_lifo=True,               # Use LIFO for better connection reuse
+    connect_args=connect_args         # Database-specific connection arguments
+)
+
+# Create async session factory
+async_session_factory = async_sessionmaker(
+    engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+)
+
+
+async def get_session() -> AsyncSession:
+    """Get a database session."""
+    async with async_session_factory() as session:
+        yield session
+
+def get_engine():
+    """Get the SQLAlchemy engine."""
+    return engine 
+
+def get_async_engine(*args, **kwargs):
+    """Get SQLAlchemy async engine with retry logic."""
+    import time
+    from sqlalchemy.exc import SQLAlchemyError
+    
+    # Get database URL from environment with proper error handling
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        logger.error("DATABASE_URL environment variable is not set")
+        database_url = os.environ.get("POSTGRES_URL")
+        if database_url:
+            logger.info("Using POSTGRES_URL as fallback")
+        else:
+            logger.critical("No database URL found in environment variables!")
+            if IS_RAILWAY:
+                # In production, fail fast
+                raise ValueError("DATABASE_URL environment variable is required")
+            else:
+                # In development, use SQLite as a fallback
+                logger.warning("Using SQLite as fallback for development")
+                database_url = "sqlite+aiosqlite:///./test.db"
+    
+    # Force asyncpg driver for PostgreSQL
+    if database_url.startswith('postgresql:'):
+        database_url = database_url.replace('postgresql:', 'postgresql+asyncpg:')
+        logger.info(f"Enforcing asyncpg driver with URL: {database_url[:25]}...")
+    
+    # Set connection parameters with sensible timeouts
+    connect_args = {
+        "timeout": 120, 
+        "command_timeout": 120, 
+        "server_settings": {
+            "application_name": "allkinds",
+            "idle_in_transaction_session_timeout": "60000"
+        },
+        "statement_cache_size": 0
+    }
+    
+    # Add SSL mode for Railway deployment
+    if IS_RAILWAY:
+        logger.info("Running on Railway, configuring SSL parameters")
+        # Use prefer mode without the context - this is what asyncpg supports
+        connect_args["ssl"] = "prefer"
+        logger.info("Configured SSL parameters: prefer mode")
+    
+    # Create engine with retry logic
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
             engine = create_async_engine(
                 database_url,
-                **engine_args
+                echo=False,
+                future=True,
+                pool_pre_ping=True,
+                pool_recycle=60,
+                pool_timeout=120,
+                pool_size=3,
+                max_overflow=5,
+                pool_use_lifo=True,
+                connect_args=connect_args
             )
             logger.info(f"Successfully created database engine on attempt {attempt + 1}")
             return engine
@@ -107,17 +240,14 @@ try:
 async def init_models(engine):
     """Initialize database models with proper handling for Railway environment."""
     logger.info(f"Initializing database models with engine {engine}...")
-    """Initialize database models with proper error handling and retry logic."""
     import time
     import asyncio
-    import ssl
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy import inspect, text
     
-    logger.info("Initializing database models...")
     metadata = Base.metadata
     
-    max_retries = 5  # Increased from 3 to 5
+    max_retries = 5
     retry_delay = 2  # seconds
     
     for attempt in range(max_retries):
@@ -169,7 +299,15 @@ async def init_models(engine):
                         engine = create_async_engine(
                             database_url,
                             connect_args=new_connect_args,
-                            pool_recycle=120, pool_timeout=60, pool_size=5, max_overflow=10, pool_use_lifo=True, max_overflow=10, pool_use_lifo=True, max_overflow=10, pool_use_lifo=True, we might still be able to create tables
+                            pool_recycle=120,
+                            pool_timeout=60,
+                            pool_size=5,
+                            max_overflow=10,
+                            pool_use_lifo=True
+                        )
+                    except Exception as ssl_config_error:
+                        logger.error(f"Failed to reconfigure engine with SSL settings: {ssl_config_error}")
+                
                 if IS_RAILWAY:
                     logger.warning("Attempting to continue despite cancellation in Railway...")
                     try:
@@ -189,6 +327,9 @@ async def init_models(engine):
                     except Exception as direct_e:
                         logger.critical(f"Final direct connection attempt failed: {direct_e}")
                 
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
                 if IS_PRODUCTION:
                     logger.error("Database initialization failed in production environment!")
                     raise  # Re-raise in production
@@ -226,4 +367,4 @@ async def init_models(engine):
                     raise  # Re-raise in production
                 else:
                     logger.warning("Continuing without proper database initialization in development environment")
-                    return metadata 
+                    return metadata
