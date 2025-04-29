@@ -51,23 +51,8 @@ def process_database_url(url):
         else:
             logger.info("Using SQLite database")
             return url
-    
 
     # Parse the URL to handle parameters safely
-    try:
-        # Handle Railway's postgres:// format
-        if url.startswith('postgres://') or url.startswith('postgresql://'):
-            # For asyncpg, we need to use postgresql+asyncpg://
-            if 'asyncpg' not in url:
-                if url.startswith('postgres://'):
-                    url = url.replace('postgres://', 'postgresql+asyncpg://', 1)
-                else:
-                    url = url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-            
-            # We no longer modify hostnames as they need to remain as provided by Railway
-            logger.info(f"Processed database URL (starts with): {url[:15]}...")
-            return url
-
     try:
         # Handle Railway's postgres:// format
         if url.startswith('postgres://') or url.startswith('postgresql://'):
@@ -126,15 +111,7 @@ class Base(DeclarativeBase):
 
 
 # Set connect_args based on database type
-connect_args = {
-        "timeout": 60, 
-        "command_timeout": 60, 
-        "server_settings": {
-            "application_name": "allkinds",
-            "idle_in_transaction_session_timeout": "60000"
-        },
-        "statement_cache_size": 0
-    }
+connect_args = {}
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
     # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
@@ -145,10 +122,6 @@ if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_
             "idle_in_transaction_session_timeout": "60000"
         },
         "statement_cache_size": 0
-    },
-        "statement_cache_size": 0
-    },
-        "statement_cache_size": 0  # Disable statement cache to avoid issues with long-running connections
     }
 
 # Create async engine with enhanced parameters for better connection handling in cloud environments
