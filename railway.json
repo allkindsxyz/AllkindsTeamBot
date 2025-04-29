@@ -8,7 +8,7 @@
     "healthcheckPath": "/health",
     "healthcheckTimeout": 15,
     "healthcheckInterval": 45,
-    "restartPolicyType": "on-failure",
+    "restartPolicyType": "ON-FAILURE",
     "restartPolicyMaxRetries": 10,
     "numReplicas": 1
   }
