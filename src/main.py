@@ -87,8 +87,11 @@ async def main():
         logger.info("Starting Allkinds Team Bot...")
         settings = get_settings()
         
+        # Check if we're in production using environment variables
+        is_production = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
+        
         # Log version and environment info
-        logger.info(f"Running in {'production' if settings.is_production else 'development'} mode")
+        logger.info(f"Running in {'production' if is_production else 'development'} mode")
         logger.info(f"Using database: {settings.db_url[:10]}...")
         
         # Start the bot
