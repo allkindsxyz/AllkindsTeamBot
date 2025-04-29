@@ -128,10 +128,13 @@ if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_
     # Add SSL mode for Railway deployment
     if IS_RAILWAY:
         logger.info("Running on Railway, configuring SSL parameters")
-        connect_args["ssl"] = "disable"  # Disable SSL verification for Railway
-        # Alternative approach if 'disable' doesn't work:
-        # connect_args["ssl"] = "prefer"
-        # connect_args["ssl_context"] = ssl._create_unverified_context()
+        # Instead of disabling SSL, use require with an unverified context
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        connect_args["ssl"] = "require"
+        connect_args["ssl_context"] = ssl_context
+        logger.info("Configured SSL parameters: require mode with verification disabled")
 
 # Create async engine with enhanced parameters for better connection handling in cloud environments
 engine = create_async_engine(
@@ -205,7 +208,12 @@ def get_async_engine(*args, **kwargs):
     # Add SSL mode for Railway deployment
     if IS_RAILWAY:
         logger.info("Running on Railway in get_async_engine, configuring SSL parameters")
-        connect_args["ssl"] = "disable"  # Disable SSL verification for Railway
+        # Instead of disabling SSL, use require with an unverified context
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        connect_args["ssl"] = "require"
+        connect_args["ssl_context"] = ssl_context
     
     # Use a separate pool for statements, with retries
     engine_args = {

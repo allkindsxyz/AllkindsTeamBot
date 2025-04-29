@@ -165,6 +165,12 @@ async def run_webhook_bot():
     webapp_host = settings.WEBAPP_HOST
     webapp_port = settings.WEBAPP_PORT
     
+    # Log webhook configuration for debugging
+    logger.info(f"Webhook configuration:")
+    logger.info(f"  HOST: {webhook_host}")
+    logger.info(f"  PATH: {webhook_path}")
+    logger.info(f"  Server listening on: {webapp_host}:{webapp_port}")
+    
     # Set up SSL if using HTTPS
     ssl_context = None
     if settings.WEBHOOK_HOST.startswith("https"):
@@ -227,6 +233,14 @@ async def run_webhook_bot():
     # Add the routes
     app.router.add_get("/health", health_handler)
     app.router.add_post(webhook_path, webhook_handler)
+    logger.info(f"Added webhook handler at path: {webhook_path}")
+    
+    # Also add a handler for the root path for diagnostics
+    async def root_handler(request):
+        return web.Response(text="Allkinds Bot is running. Use the Telegram app to interact with the bot.")
+    
+    app.router.add_get("/", root_handler)
+    logger.info(f"Added root handler at path: /")
     
     # Set up shutdown routine with robust cleanup
     async def shutdown_app(app):
