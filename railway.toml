@@ -6,7 +6,7 @@ buildCommand = "pip install -r requirements.txt && python check_dependencies.py 
 startCommand = "python -m src.health & sleep 5 && python -m src.main & python -m src.communicator_bot.main & wait"
 healthcheckPath = "/health"
 healthcheckTimeout = 15
-restartPolicyType = "on-failure"
+restartPolicy = "on-failure"
 restartPolicyMaxRetries = 5
 
 [nixpacks]
