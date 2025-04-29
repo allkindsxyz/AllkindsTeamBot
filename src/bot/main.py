@@ -363,11 +363,10 @@ async def lifespan(app: web.Application):
 
 def register_all_handlers(dp: Dispatcher):
     """Register all command handlers with the dispatcher."""
-    from src.bot.handlers import register_user_commands, register_admin_commands
+    from src.bot.handlers import register_handlers
     
-    # Include all handler modules
-    register_user_commands(dp)
-    register_admin_commands(dp)
+    # Register all handlers using the main registration function
+    register_handlers(dp)
     logger.info("All handlers registered successfully")
 
 

@@ -1,37 +1,38 @@
 """Bot handlers initialization module."""
 
-import logging
-from aiogram import Dispatcher, Router
-from aiogram.filters import Command
+from aiogram import Dispatcher
+from src.bot.handlers import start, questions, matches, admin
+from loguru import logger
 
-# Import all handler modules
-from src.bot.handlers.user import start, profile, help, questions
-from src.bot.handlers.admin import broadcast, stats
+def register_handlers(dp: Dispatcher) -> None:
+    """Register all handlers for the bot."""
+    logger.info("Registering handlers from all modules...")
+    
+    # Register handlers in a specific order to ensure proper handling
+    # Start handlers must be registered first since they handle basic commands
+    logger.info("Registering start handlers...")
+    start.register_handlers(dp)
+    
+    logger.info("Registering questions handlers...")
+    questions.register_handlers(dp)
+    
+    logger.info("Registering matches handlers...")
+    matches.register_handlers(dp)
+    
+    logger.info("Registering admin handlers...")
+    admin.register_handlers(dp)
+    
+    logger.info("All handlers registered successfully")
 
-logger = logging.getLogger(__name__)
-
+# For backward compatibility with any code that might expect these functions
 def register_user_commands(dp: Dispatcher):
-    """Register all user command handlers."""
-    user_router = Router(name="user_commands")
-    
-    # Include all user command modules
-    user_router.include_router(start.router)
-    user_router.include_router(profile.router)
-    user_router.include_router(help.router)
-    user_router.include_router(questions.router)
-    
-    # Add the user router to the dispatcher
-    dp.include_router(user_router)
-    logger.info("Registered user commands")
+    """Register all user command handlers for compatibility."""
+    logger.info("Using compatibility register_user_commands function")
+    start.register_handlers(dp)
+    questions.register_handlers(dp)
+    matches.register_handlers(dp)
 
 def register_admin_commands(dp: Dispatcher):
-    """Register all admin command handlers."""
-    admin_router = Router(name="admin_commands")
-    
-    # Include all admin command modules
-    admin_router.include_router(broadcast.router)
-    admin_router.include_router(stats.router)
-    
-    # Add the admin router to the dispatcher
-    dp.include_router(admin_router)
-    logger.info("Registered admin commands")
+    """Register all admin command handlers for compatibility."""
+    logger.info("Using compatibility register_admin_commands function")
+    admin.register_handlers(dp)
