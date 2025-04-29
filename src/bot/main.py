@@ -160,10 +160,11 @@ async def run_webhook_bot():
     """Run the bot in webhook mode."""
     logger.info("Starting bot in webhook mode")
     
-    webhook_host = settings.WEBHOOK_HOST
-    webhook_path = settings.WEBHOOK_PATH
-    webapp_host = settings.WEBAPP_HOST
-    webapp_port = settings.WEBAPP_PORT
+    # Get webhook settings from environment
+    webhook_host = os.environ.get("WEBHOOK_HOST")
+    webhook_path = os.environ.get("WEBHOOK_PATH", "/webhook")
+    webapp_host = "0.0.0.0"
+    webapp_port = int(os.environ.get("BOT_PORT", 8081))
     
     # Log webhook configuration for debugging
     logger.info(f"Webhook configuration:")
@@ -173,9 +174,13 @@ async def run_webhook_bot():
     
     # Set up SSL if using HTTPS
     ssl_context = None
-    if settings.WEBHOOK_HOST.startswith("https"):
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
-        ssl_context.load_cert_chain(settings.WEBHOOK_SSL_CERT, settings.WEBHOOK_SSL_PRIV)
+    if webhook_host and webhook_host.startswith("https"):
+        if os.path.exists(settings.WEBHOOK_SSL_CERT) and os.path.exists(settings.WEBHOOK_SSL_PRIV):
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+            ssl_context.load_cert_chain(settings.WEBHOOK_SSL_CERT, settings.WEBHOOK_SSL_PRIV)
+            logger.info("SSL context configured for webhook")
+        else:
+            logger.warning("SSL certificates not found, running without SSL")
     
     # Initialize the bot with an AiohttpSession for better control
     bot_session = AiohttpSession()
@@ -200,10 +205,13 @@ async def run_webhook_bot():
     
     # Set up webhook
     try:
-        webhook_url = f"{webhook_host}{webhook_path}"
-        logger.info(f"Attempting to set webhook to {webhook_url}")
-        await bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to {webhook_url}")
+        if webhook_host:
+            webhook_url = f"{webhook_host}{webhook_path}"
+            logger.info(f"Attempting to set webhook to {webhook_url}")
+            await bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to {webhook_url}")
+        else:
+            logger.warning("No webhook host provided, skipping webhook setup")
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
         # Continue anyway - the application might still serve webhook requests
@@ -213,31 +221,40 @@ async def run_webhook_bot():
     
     # Simple handler for health checks
     async def health_handler(request):
-        return web.Response(text="Bot is running")
+        return web.Response(text='{"status":"ok","service":"main_bot"}', content_type='application/json')
+    
+    # Ping handler for internal health checks
+    async def ping_handler(request):
+        return web.Response(text='{"status":"ok"}', content_type='application/json')
     
     # Webhook handler with enhanced error handling
     async def webhook_handler(request):
         try:
             # Get the request data
-            data = await request.json()
+            data = await request.read()
+            logger.info(f"Received webhook update: {len(data)} bytes")
+            
             # Create a telegram Update object
-            update = types.Update.model_validate(data, context={"bot": bot})
+            update = types.Update.model_validate_json(data)
+            
             # Process the update using the dispatcher
             await dp.feed_update(bot, update)
-            return web.Response()
+            return web.Response(text='{"ok":true}', content_type='application/json')
         except Exception as e:
             logger.error(f"Error in webhook handler: {e}")
             traceback.print_exc()
-            return web.Response(status=500)
+            return web.Response(status=500, text='{"ok":false,"error":"Internal error"}', 
+                              content_type='application/json')
     
     # Add the routes
     app.router.add_get("/health", health_handler)
+    app.router.add_get("/ping", ping_handler)
     app.router.add_post(webhook_path, webhook_handler)
     logger.info(f"Added webhook handler at path: {webhook_path}")
     
     # Also add a handler for the root path for diagnostics
     async def root_handler(request):
-        return web.Response(text="Allkinds Bot is running. Use the Telegram app to interact with the bot.")
+        return web.Response(text="Allkinds Main Bot is running. Use the Telegram app to interact with the bot.")
     
     app.router.add_get("/", root_handler)
     logger.info(f"Added root handler at path: /")

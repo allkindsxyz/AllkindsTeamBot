@@ -1,2 +1,2 @@
-# Main webhook receiver on port 8080, bots on separate ports
-web: WEBHOOK_HOST="https://$RAILWAY_STATIC_URL" python -m src.health & sleep 5 && WEBAPP_PORT=8081 WEBHOOK_PATH="/webhook" python -m src.main & WEBAPP_PORT=8082 WEBHOOK_PATH="/webhook" python -m src.communicator_bot.main & wait
+# Run both bots with webhook mode on distinct ports
+web: cd $PWD && python -m src.bot.main --webhook --port 8081 & python -m src.communicator_bot.main --webhook --port 8082
