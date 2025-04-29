@@ -54,7 +54,37 @@ def process_database_url(url):
             return url
 
 
+
+
     # Parse the URL to handle parameters safely
+    try:
+        # Handle Railway's postgres:// format
+        if url.startswith('postgres://') or url.startswith('postgresql://'):
+            # For asyncpg, we need to use postgresql+asyncpg://
+            if 'asyncpg' not in url:
+                if url.startswith('postgres://'):
+                    url = url.replace('postgres://', 'postgresql+asyncpg://', 1)
+                else:
+                    url = url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+            
+            # We no longer modify hostnames as they need to remain as provided by Railway
+            logger.info(f"Processed database URL (starts with): {url[:15]}...")
+            return url
+
+    try:
+        # Handle Railway's postgres:// format
+        if url.startswith('postgres://') or url.startswith('postgresql://'):
+            # For asyncpg, we need to use postgresql+asyncpg://
+            if 'asyncpg' not in url:
+                if url.startswith('postgres://'):
+                    url = url.replace('postgres://', 'postgresql+asyncpg://', 1)
+                else:
+                    url = url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+            
+            # We no longer modify hostnames as they need to remain as provided by Railway
+            logger.info(f"Processed database URL (starts with): {url[:15]}...")
+            return url
+
     try:
         # Handle Railway's postgres:// format
         if url.startswith('postgres://') or url.startswith('postgresql://'):
@@ -137,8 +167,6 @@ if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_
             "application_name": "allkinds",
             "idle_in_transaction_session_timeout": "60000"
         },
-        "statement_cache_size": 0
-    },
         "statement_cache_size": 0
     }
     
@@ -320,7 +348,7 @@ async def init_models(engine):
                         engine = create_async_engine(
                             database_url,
                             connect_args=new_connect_args,
-                            pool_recycle=120, pool_timeout=60, pool_size=5, max_overflow=10, pool_use_lifo=True, we might still be able to create tables
+                            pool_recycle=120, pool_timeout=60, pool_size=5, max_overflow=10, pool_use_lifo=True, max_overflow=10, pool_use_lifo=True, max_overflow=10, pool_use_lifo=True, we might still be able to create tables
                 if IS_RAILWAY:
                     logger.warning("Attempting to continue despite cancellation in Railway...")
                     try:
