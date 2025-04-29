@@ -12,7 +12,7 @@ from src.db.repositories.user import user_repo
 
 
 class DatabaseMiddleware(BaseMiddleware):
-    \"\"\"Middleware for handling database connections with proper error handling and timeouts.\"\"\"
+    """Middleware for handling database connections with proper error handling and timeouts."""
     
     def __init__(self):
         self.session_pool = {}
@@ -21,45 +21,7 @@ class DatabaseMiddleware(BaseMiddleware):
         logger.info("Database middleware initialized with retry logic")
         super().__init__()
     
-    async def __call__
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any],
-    ) -> Any:
-        """Inject database session into handler."""
-        session = None
-        try:
-            session = self.session_factory()
-            logger.debug(f"Created database session {id(session)}")
-            data["session"] = session
-            
-            # We use a nested approach with context manager to handle transaction management
-            async with session:
-                logger.debug("Executing handler within database session context")
-                result = await handler(event, data)
-                logger.debug("Handler execution complete")
-                return result
-        except Exception as e:
-            logger.error(f"Error in database middleware: {e}")
-            # If we have a session and it's still active, try to rollback
-            if session:
-                try:
-                    await session.rollback()
-                    logger.info("Session rolled back after error")
-                except Exception as rollback_error:
-                    logger.error(f"Failed to rollback session: {rollback_error}")
-            raise
-        finally:
-            if session:
-                try:
-                    await session.close()
-                    logger.debug(f"Closed database session {id(session)}")
-                except Exception as close_error:
-                    logger.error(f"Failed to close database session: {close_error}")
-
-
-class LoggingMiddleware(BaseMiddleware:
+    async def __call__(self, handler, event, data):
         import time
         import asyncio
         from sqlalchemy.exc import SQLAlchemyError
@@ -146,16 +108,26 @@ class LoggingMiddleware(BaseMiddleware:
         if original_exc:
             raise original_exc
         raise RuntimeError("Failed to establish database connection")
-        
+
+
+class LoggingMiddleware(BaseMiddleware):
+    """Middleware for logging bot events and user actions."""
+    
+    def __init__(self):
+        super().__init__()
+        logger.info("Logging middleware initialized")
+    
+    async def __call__(self, handler, event, data):
         # Get user info if available
         user_id = None
         
-        if update.message:
-            user_id = update.message.from_user.id if update.message.from_user else None
-        elif update.callback_query:
-            user_id = update.callback_query.from_user.id if update.callback_query.from_user else None
+        if hasattr(event, 'message') and event.message:
+            user_id = event.message.from_user.id if event.message.from_user else None
+        elif hasattr(event, 'callback_query') and event.callback_query:
+            user_id = event.callback_query.from_user.id if event.callback_query.from_user else None
         
         # Update activity timestamp for user's active chats
+        session = data.get("session")
         if user_id and session:
             try:
                 # Get user from DB

@@ -2547,7 +2547,27 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
             bot_username = "AllkindsCommunicatorBot"  # Use fallback
             logger.info(f"[DEEP_LINK] Using fallback username: {bot_username}")
             
-        deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"
+        # Ensure bot username is valid
+            bot_username = bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            # Ensure bot username is valid
+            bot_username = bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"  
         logger.info(f"[DEEP_LINK] Generated deep link: {deep_link}")
         logger.debug(f"[START_ANON_CHAT] Generated deep link: {deep_link}")
         
@@ -3409,14 +3429,46 @@ async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMCont
             logger.info(f"Using existing chat session {chat_id} between users {db_user.id} and {matched_user_id}")
 
         # Generate a deep link to the communicator bot
-        communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
-        # Ensure username is valid before creating the link
-        if not communicator_bot_username or communicator_bot_username == "":
-            communicator_bot_username = "AllkindsCommunicatorBot"  # Fallback to a known username
-            logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
-        
-        # Create the deep link with proper validation
-        deep_link = f"https://t.me/{communicator_bot_username}?start=chat_{chat_id}"
+        try:
+            communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
+            # Ensure username is valid before creating the link
+            if not communicator_bot_username or communicator_bot_username == "":
+                communicator_bot_username = "AllkindsCommunicatorBot"  # Fallback to a known username
+                logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
+            
+            # Remove @ if it's included in the username
+            if communicator_bot_username.startswith('@'):
+                communicator_bot_username = communicator_bot_username[1:]
+                logger.info(f"Removed @ prefix from bot username, using: {communicator_bot_username}")
+                
+            # Create the deep link with proper validation
+            # Ensure bot username is valid
+            bot_username = communicator_bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            deep_link = f"https://t.me/{bot_username}?start=chat_{chat_id}" 
+            logger.info(f"Generated deep link: {deep_link}")
+        except Exception as e:
+            logger.error(f"Error generating deep link: {e}")
+            communicator_bot_username = "AllkindsCommunicatorBot"  # Emergency fallback
+            # Ensure bot username is valid
+            bot_username = communicator_bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            deep_link = f"https://t.me/{bot_username}?start=chat_{chat_id}" 
+            logger.warning(f"Using emergency fallback for deep link: {deep_link}")
         logger.info(f"Generated deep link: {deep_link}")
 
         # Send confirmation to the initiating user (User A)
@@ -7645,7 +7697,27 @@ async def handle_start_anon_chat(query: types.CallbackQuery, state: FSMContext, 
             bot_username = "AllkindsCommunicatorBot"  # Use fallback
             logger.info(f"[DEEP_LINK] Using fallback username: {bot_username}")
             
-        deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"
+        # Ensure bot username is valid
+            bot_username = bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            # Ensure bot username is valid
+            bot_username = bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            deep_link = f"https://t.me/{bot_username}?start=chat_{session_id}"  
         logger.info(f"[DEEP_LINK] Generated deep link: {deep_link}")
         logger.debug(f"[START_ANON_CHAT] Generated deep link: {deep_link}")
         
@@ -8506,14 +8578,46 @@ async def on_start_anon_chat(callback_query: types.CallbackQuery, state: FSMCont
             logger.info(f"Using existing chat session {chat_id} between users {db_user.id} and {matched_user_id}")
 
         # Generate a deep link to the communicator bot
-        communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
-        # Ensure username is valid before creating the link
-        if not communicator_bot_username or communicator_bot_username == "":
-            communicator_bot_username = "AllkindsCommunicatorBot"  # Fallback to a known username
-            logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
-        
-        # Create the deep link with proper validation
-        deep_link = f"https://t.me/{communicator_bot_username}?start=chat_{chat_id}"
+        try:
+            communicator_bot_username = settings.COMMUNICATOR_BOT_USERNAME
+            # Ensure username is valid before creating the link
+            if not communicator_bot_username or communicator_bot_username == "":
+                communicator_bot_username = "AllkindsCommunicatorBot"  # Fallback to a known username
+                logger.warning(f"Using fallback communicator bot username: {communicator_bot_username}")
+            
+            # Remove @ if it's included in the username
+            if communicator_bot_username.startswith('@'):
+                communicator_bot_username = communicator_bot_username[1:]
+                logger.info(f"Removed @ prefix from bot username, using: {communicator_bot_username}")
+                
+            # Create the deep link with proper validation
+            # Ensure bot username is valid
+            bot_username = communicator_bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            deep_link = f"https://t.me/{bot_username}?start=chat_{chat_id}" 
+            logger.info(f"Generated deep link: {deep_link}")
+        except Exception as e:
+            logger.error(f"Error generating deep link: {e}")
+            communicator_bot_username = "AllkindsCommunicatorBot"  # Emergency fallback
+            # Ensure bot username is valid
+            bot_username = communicator_bot_username
+            if not bot_username or bot_username == "":
+                bot_username = "AllkindsCommunicatorBot"  # Fallback
+                logger.warning(f"Using fallback bot username: {bot_username}")
+            
+            # Remove @ if it's included
+            if isinstance(bot_username, str) and bot_username.startswith('@'):
+                bot_username = bot_username[1:]
+                
+            deep_link = f"https://t.me/{bot_username}?start=chat_{chat_id}" 
+            logger.warning(f"Using emergency fallback for deep link: {deep_link}")
         logger.info(f"Generated deep link: {deep_link}")
 
         # Send confirmation to the initiating user (User A)

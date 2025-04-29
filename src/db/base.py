@@ -155,7 +155,7 @@ def get_engine():
     return engine 
 
 def get_async_engine(*args, **kwargs):
-    \"\"\"Get SQLAlchemy async engine with retry logic.\"\"\"
+    """Get SQLAlchemy async engine with retry logic."""
     import time
     from sqlalchemy.exc import SQLAlchemyError
     
@@ -219,33 +219,76 @@ def get_async_engine(*args, **kwargs):
                 raise
 
 async def init_models(engine):
-    """Initialize database models."""
+    """Initialize database models with proper error handling and retry logic."""
+    import time
+    import asyncio
+    from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy import inspect, text
     
     logger.info("Initializing database models...")
+    metadata = Base.metadata
     
-    try:
-        async with engine.begin() as conn:
-            # Test connection
-            await conn.execute(text("SELECT 1"))
-            logger.info("Database connection successful")
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            async with engine.begin() as conn:
+                # Test connection
+                await conn.execute(text("SELECT 1"))
+                logger.info("Database connection successful")
+                
+                # Check if tables exist
+                tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+                
+                if not tables:
+                    logger.info("No tables found. Creating database schema...")
+                    await conn.run_sync(metadata.create_all)
+                    logger.info("Database schema created.")
+                else:
+                    logger.info(f"Found existing tables: {tables}")
             
-            # Check if tables exist
-            tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+            logger.info("Database models initialized successfully")
+            return metadata
             
-            if not tables:
-                logger.info("No tables found. Creating database schema...")
-                await conn.run_sync(Base.metadata.create_all)
-                logger.info("Database schema created.")
+        except asyncio.exceptions.CancelledError as e:
+            logger.error(f"Connection cancelled (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
             else:
-                logger.info(f"Found existing tables: {tables}")
-    except Exception as e:
-        logger.error(f"Error initializing database models: {e}")
-        # In production, fail on database errors
-        if IS_PRODUCTION:
-            logger.error("Database initialization failed in production environment!")
-            raise
-        # In development, try to continue
-        logger.warning("Continuing despite database initialization error in development")
-        
-    logger.info("Database models initialization complete.") 
+                logger.error(f"Database initialization failed after {max_retries} attempts due to: {e}")
+                if IS_PRODUCTION:
+                    logger.error("Database initialization failed in production environment!")
+                    raise  # Re-raise in production
+                else:
+                    logger.warning("Continuing without proper database initialization in development environment")
+                    return metadata
+                    
+        except SQLAlchemyError as e:
+            logger.error(f"SQLAlchemy error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Database initialization failed after {max_retries} attempts due to SQLAlchemy error: {e}")
+                if IS_PRODUCTION:
+                    logger.error("Database initialization failed in production environment!")
+                    raise  # Re-raise in production
+                else:
+                    logger.warning("Continuing without proper database initialization in development environment")
+                    return metadata
+                    
+        except Exception as e:
+            logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Database initialization failed after {max_retries} attempts due to: {e}")
+                if IS_PRODUCTION:
+                    logger.error("Database initialization failed in production environment!")
+                    raise  # Re-raise in production
+                else:
+                    logger.warning("Continuing without proper database initialization in development environment")
+                    return metadata 
