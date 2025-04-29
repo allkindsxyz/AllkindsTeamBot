@@ -52,22 +52,7 @@ def process_database_url(url):
             logger.info("Using SQLite database")
             return url
     
-
     # Parse the URL to handle parameters safely
-    try:
-        # Handle Railway's postgres:// format
-        if url.startswith('postgres://') or url.startswith('postgresql://'):
-            # For asyncpg, we need to use postgresql+asyncpg://
-            if 'asyncpg' not in url:
-                if url.startswith('postgres://'):
-                    url = url.replace('postgres://', 'postgresql+asyncpg://', 1)
-                else:
-                    url = url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-            
-            # We no longer modify hostnames as they need to remain as provided by Railway
-            logger.info(f"Processed database URL (starts with): {url[:15]}...")
-            return url
-
     try:
         # Handle Railway's postgres:// format
         if url.startswith('postgres://') or url.startswith('postgresql://'):
@@ -127,27 +112,18 @@ class Base(DeclarativeBase):
 
 # Set connect_args based on database type
 connect_args = {
-        "timeout": 60, 
-        "command_timeout": 60, 
-        "server_settings": {
-            "application_name": "allkinds",
-            "idle_in_transaction_session_timeout": "60000"
-        },
-        "statement_cache_size": 0
+        "command_timeout": 30,  # Command execution timeout
+        "timeout": 30,  # Increased connection timeout,
+        "statement_cache_size": 0  # Disable statement cache
     }
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
     # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
-        "timeout": 60, 
-        "command_timeout": 60, 
+        "timeout": 30,             # Increase connection timeout to 30 seconds
+        "command_timeout": 30,     # Add command timeout of 30 seconds
         "server_settings": {
-            "application_name": "allkinds",
-            "idle_in_transaction_session_timeout": "60000"
+            "application_name": "allkinds"
         },
-        "statement_cache_size": 0
-    },
-        "statement_cache_size": 0
-    },
         "statement_cache_size": 0  # Disable statement cache to avoid issues with long-running connections
     }
 
@@ -157,11 +133,10 @@ engine = create_async_engine(
     echo=settings.debug,
     future=True,
     pool_pre_ping=True,               # Verify connections before using them
-    pool_recycle=120,                 # Recycle connections more frequently (2 minutes)
-    pool_timeout=60,                  # Increased timeout for cloud environments
-    pool_size=5,                      # Smaller pool size for better stability
-    max_overflow=10,                  # Fewer overflow connections to prevent resource exhaustion
-    pool_use_lifo=True,               # Use LIFO for better connection reuse
+    pool_recycle=180,                 # Recycle connections more frequently (3 minutes),                 # Recycle connections more frequently (3 minutes)
+    pool_timeout=45,                  # Increased timeout for cloud environments,                  # Increase connection timeout for cloud environments
+    pool_size=10,                     # Increased pool size for better concurrency,                     # Increase pool size for better handling of concurrent requests
+    max_overflow=20,           # Allow more overflow connections for spikes,                  # Allow more overflow connections
     connect_args=connect_args         # Database-specific connection arguments
 )
 
@@ -211,13 +186,8 @@ def get_async_engine(*args, **kwargs):
     
     # Set connection parameters with sensible timeouts
     connect_args = {
-        "timeout": 60, 
-        "command_timeout": 60, 
-        "server_settings": {
-            "application_name": "allkinds",
-            "idle_in_transaction_session_timeout": "60000"
-        },
-        "statement_cache_size": 0
+        'timeout': 10,  # Connection timeout in seconds
+        'command_timeout': 10,  # Command execution timeout
     }
     
     # Use a separate pool for statements, with retries
@@ -252,8 +222,6 @@ def get_async_engine(*args, **kwargs):
                 raise
 
 async def init_models(engine):
-    """Initialize database models with proper handling for Railway environment."""
-    logger.info(f"Initializing database models with engine {engine}...")
     """Initialize database models with proper error handling and retry logic."""
     import time
     import asyncio
@@ -292,12 +260,11 @@ async def init_models(engine):
             
             # Retry with adjusted timeout
             if attempt < max_retries - 1:
-                logger.info(f"Retrying with increased timeout after CancelledError...")
-                # Increase timeout to allow more time for connection
-                # Also add some sleep time to allow resources to clear
-                engine_args['pool_timeout'] = 120
-                connect_args['timeout'] = 90
-                time.sleep(retry_delay * 2)  # Sleep longer after cancellation
+                logger.info(f"Retrying with adjusted timeout after CancelledError...")
+                # Reduce timeout to avoid cancellation
+                engine_args['pool_timeout'] = 15
+                connect_args['timeout'] = 5
+                time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
                 logger.error(f"Database initialization failed after {max_retries} attempts due to cancellation: {e}")
@@ -340,8 +307,6 @@ async def init_models(engine):
                     
         except Exception as e:
             logger.error(f"Unexpected error (attempt {attempt + 1}/{max_retries}): {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff

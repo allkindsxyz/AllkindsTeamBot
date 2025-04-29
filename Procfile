@@ -1,2 +1,1 @@
-web: sh railway_start.sh
-health: python3 healthcheck.py
+web: python -m src.main & python -m src.communicator_bot.main & python -m src.health & wait

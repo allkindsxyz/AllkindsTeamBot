@@ -1,30 +1,13 @@
 [build]
-builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt"
 
-# Remove the global [deploy] block, settings are now per-service
+[deploy]
+startCommand = "python -m src.main & python -m src.communicator_bot.main & python -m src.health & wait"
+healthcheckPath = "/health"
+healthcheckTimeout = 10
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 5
 
-[[services]]
-name = "allkinds-team-bot" # Ensure this matches your service name in Railway
-# Use our robust runner script with better database initialization
-startCommand = "python3 -m src.db.verify_postgres_connection && python3 -c \"import asyncio; from src.db.init_db import init_db; print('Starting database initialization...'); asyncio.run(init_db()); print('Database initialization complete.')\" && chmod +x run_bot_continuously.sh && ./run_bot_continuously.sh"
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 10  # Increase max retries before giving up
-healthcheckPath = "/health" # Add healthcheck path to keep the service active
-healthcheckTimeout = 30 # Increase timeout to 30 seconds
-healthcheckInterval = 30 # Check more frequently (every 30 seconds)
-healthcheckMethod = "GET" # Specify the HTTP method 
-healthcheckGracePeriod = 180 # Give 3 minutes grace period for startup - increased for database initialization
-# [services.deploy.pre] # Pre-deploy command only for the main bot service  <- Temporarily disable this block
-# command = "python3 -c \"import asyncio; from src.db.init_db import init_db; print('Starting database initialization...'); asyncio.run(init_db()); print('Database initialization complete.')\""
-
-[[services]]
-name = "allkinds-chat-bot" # Ensure this matches your service name in Railway
-startCommand = "pip install --upgrade aiosqlite asyncpg sqlalchemy && python3 -m src.db.verify_postgres_connection && python3 -m src.db.init_communicator_db && echo --- Starting Python Communicator Bot --- && python3 -m src.communicator_bot.main"
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 10  # Increase max retries
-healthcheckPath = "/health" # Add healthcheck path to keep the service active
-healthcheckTimeout = 30 # Increase timeout to 30 seconds
-healthcheckInterval = 30 # Check more frequently
-healthcheckMethod = "GET" # Specify the HTTP method
-healthcheckGracePeriod = 120 # Give 2 minutes grace period for startup 
+[nixpacks]
+pkgs = ["python310", "gcc", "build-essential", "curl"]

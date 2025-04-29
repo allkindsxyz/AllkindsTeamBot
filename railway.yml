@@ -1,0 +1,22 @@
+# Railway configuration
+version: 2
+services:
+  allkinds-bot:
+    dockerfilePath: ./Dockerfile
+    startCommand: python3 -m src.main
+    healthcheckPath: /health
+    healthcheckTimeout: 10
+    healthcheckInterval: 30
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+  
+  communicator-bot:
+    dockerfilePath: ./Dockerfile
+    startCommand: python3 -m src.communicator_bot.main
+    healthcheckPath: /health
+    healthcheckTimeout: 10
+    healthcheckInterval: 30
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0

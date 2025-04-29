@@ -1,167 +1,49 @@
-# Railway Deployment Guide for Allkinds Bot
+# Railway Deployment Guide for AllkindsTeamBot
+
+This guide provides step-by-step instructions for deploying the AllkindsTeamBot (including both the main bot and communicator bot) on Railway.
+
+## Prerequisites
+
+1. A Railway account
+2. Git repository connected to Railway
+3. Telegram bot tokens for both bots
+
+## Environment Variables
+
+Set the following environment variables in the Railway project settings:
+
+- `BOT_TOKEN` - Your main Telegram bot token
+- `COMMUNICATOR_BOT_TOKEN` - Your communicator bot token
+- `COMMUNICATOR_BOT_USERNAME` - Username of your communicator bot (without @)
+- `DATABASE_URL` - PostgreSQL connection string (automatically set by Railway if using their PostgreSQL plugin)
+- `ADMIN_IDS` - Comma-separated list of admin Telegram IDs
+- `OPENAI_API_KEY` - Your OpenAI API key
 
 ## Deployment Steps
 
-### 1. Set Up Railway Project
+1. Create a new Railway project
+2. Add a PostgreSQL database using Railway's plugin
+3. Connect your GitHub repository to the project
+4. Set all the required environment variables
+5. Deploy the application
 
-1. Create a new project in Railway
-2. Link your GitHub repository
-3. Enable automatic deployments
+## Troubleshooting
 
-### 2. Configure Environment Variables
+If you encounter any issues:
 
-Set the following required environment variables:
+1. Check the application logs in Railway's dashboard
+2. Verify all environment variables are set correctly
+3. Restart the deployment if necessary
+4. Make sure both bots are properly registered and active on Telegram
 
-```
-TELEGRAM_BOT_TOKEN=your_bot_token
-WEBHOOK_DOMAIN=your_railway_public_url
-ADMIN_IDS=comma_separated_telegram_ids
-OPENAI_API_KEY=your_openai_api_key
-RAILWAY_ENVIRONMENT=production
-```
+## Health Checks
 
-### 3. Add Database
+Both bots expose a `/health` endpoint that Railway uses to monitor their status. If the health check fails, Railway will automatically restart the service.
 
-1. Add PostgreSQL as a service
-2. Railway will automatically add the `DATABASE_URL` variable
+## Database Maintenance
 
-### 4. Deploy
+Railway's PostgreSQL database may require occasional maintenance:
 
-1. Push your code to trigger a deployment
-2. Railway will run `railway_start.sh` automatically
-
-## Troubleshooting Railway Deployment
-
-### 1. Verify Webhook Setup
-
-If the bot is not responding to messages on Telegram:
-
-1. Check webhook status:
-   ```
-   curl -X GET https://api.telegram.org/bot<your_token>/getWebhookInfo
-   ```
-
-2. Verify the webhook URL matches your Railway deployment:
-   ```
-   https://<your-railway-domain>/webhook/<your_token>
-   ```
-
-3. Check Railway logs for webhook errors:
-   ```
-   WEBHOOK REQUEST: method=POST, ip=...
-   ```
-
-4. Reset webhook if needed:
-   ```
-   curl -X POST https://api.telegram.org/bot<your_token>/setWebhook?url=https://<your-railway-domain>/webhook/<your_token>
-   ```
-
-### 2. Database Issues
-
-If database operations are failing:
-
-1. Check connection in Railway logs for errors like:
-   ```
-   Error committing session
-   Database connection attempt failed
-   ```
-
-2. Verify the PostgreSQL service is running
-3. Check that migrations completed successfully (look for "Database initialization complete")
-4. Try reconnecting the database service in Railway dashboard
-
-### 3. Performance Issues
-
-If the bot is slow or unresponsive:
-
-1. Use the `/railway_diagnostics` command to check metrics
-2. Check for slow operations in logs (operations taking >1s)
-3. Look for memory issues or CPU spikes in Railway dashboard
-4. Consider scaling up your instances if needed
-
-### 4. Command Execution Issues
-
-If specific commands aren't working:
-
-1. Look for command errors in logs:
-   ```
-   COMMAND ERROR in cmd_questions: ...
-   ```
-
-2. Check if the same command works locally
-3. Trace the specific function execution using our diagnostic tools
-
-### 5. Using Diagnostics Tools
-
-For real-time diagnostics:
-
-1. Use `/railway_diagnostics` command (admin only)
-2. Check the web endpoint: `https://<your-railway-domain>/diagnostics`
-3. Download logs and run `python analyze_railway_logs.py railway_logs.txt`
-
-### 6. Common Errors and Solutions
-
-#### Webhook Issues:
-
-```
-Failed to set webhook to ...
-```
-
-Solution:
-- Check if the domain is accessible
-- Verify TLS/SSL is working
-- Make sure the path is correct
-
-#### Database Connection Errors:
-
-```
-Error in get_next_question_for_user: ...
-```
-
-Solution:
-- Check DATABASE_URL
-- Ensure the database is not at connection limit
-- Look for transaction locks
-
-#### Aiogram Errors:
-
-```
-TelegramConflictError: Conflict: terminated by other getUpdates request
-```
-
-Solution:
-- Make sure only one instance is running
-- Delete webhook and set it again
-- Check for other bots using the same token
-
-## Monitoring
-
-1. Set up Railway alerts for:
-   - Deployment failures
-   - High CPU/memory usage
-   - Service downtime
-
-2. Use the diagnostics endpoint to periodically check:
-   - Webhook calls
-   - Error rates
-   - Command execution
-
-3. Set up a monitoring system (e.g., UptimeRobot) to ping your health endpoint:
-   ```
-   https://<your-railway-domain>/health
-   ```
-
-## Rolling Back
-
-If a deployment fails:
-
-1. Use Railway dashboard to roll back to the previous version
-2. Check logs to identify the issue
-3. Fix the issue locally and test before redeploying
-
-## Resources
-
-- [Railway Documentation](https://docs.railway.app)
-- [Aiogram Documentation](https://docs.aiogram.dev/en/latest/)
-- [Telegram Bot API](https://core.telegram.org/bots/api)
-- [Diagnostics Tools](DIAGNOSTICS.md) 
+1. Backups are handled automatically by Railway
+2. Consider setting up periodic data exports for additional safety
+3. Monitor database usage through Railway's dashboard
