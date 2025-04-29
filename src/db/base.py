@@ -6,6 +6,9 @@ import urllib.parse
 from loguru import logger
 import re
 import sys
+# Check if we're in Railway
+IS_RAILWAY = os.environ.get('RAILWAY_ENVIRONMENT') is not None
+
 
 from src.core.config import get_settings
 
@@ -252,12 +255,35 @@ async def init_models(engine):
             return metadata
             
         except asyncio.exceptions.CancelledError as e:
+            # This is a critical issue in Railway - the connection is being cancelled
             logger.error(f"Connection cancelled (attempt {attempt + 1}/{max_retries}): {e}")
+            
+            # Retry with adjusted timeout
             if attempt < max_retries - 1:
+                logger.info(f"Retrying with adjusted timeout after CancelledError...")
+                # Reduce timeout to avoid cancellation
+                engine_args['pool_timeout'] = 15
+                connect_args['timeout'] = 5
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
-                logger.error(f"Database initialization failed after {max_retries} attempts due to: {e}")
+                logger.error(f"Database initialization failed after {max_retries} attempts due to cancellation: {e}")
+                
+                # In production with cancellation errors, we might still be able to create tables
+                if IS_PRODUCTION or IS_RAILWAY:
+                    logger.warning("Attempting to continue despite cancellation in production...")
+                    try:
+                        # Try with a more direct approach
+                        async with engine.begin() as conn:
+                            await conn.run_sync(metadata.create_all)
+                        logger.info("Successfully created database tables despite connection issues")
+                        return metadata
+                    except Exception as inner_e:
+                        logger.critical(f"Final attempt to create tables failed: {inner_e}")
+                        raise  # Re-raise only after trying everything
+                else:
+                    logger.warning("Continuing without proper database initialization in development environment")
+                    return metadata
                 if IS_PRODUCTION:
                     logger.error("Database initialization failed in production environment!")
                     raise  # Re-raise in production
