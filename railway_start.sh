@@ -4,8 +4,9 @@
 # Log the startup
 echo "Starting AllkindsTeamBot services..."
 
-# Give the system a moment to stabilize
-sleep 3
+# Give the system and database a moment to stabilize
+echo "Waiting for database to become available..."
+sleep 15
 
 # Start the main bot
 python -m src.main &
@@ -22,13 +23,17 @@ monitor() {
   echo "Monitoring processes..."
   while true; do
     if ! kill -0 $MAIN_PID 2>/dev/null; then
-      echo "Main bot process died, restarting..."
+      echo "Main bot process died, waiting before restarting..."
+      sleep 5
+      echo "Restarting main bot..."
       python -m src.main &
       MAIN_PID=$!
     fi
     
     if ! kill -0 $COMM_PID 2>/dev/null; then
-      echo "Communicator bot process died, restarting..."
+      echo "Communicator bot process died, waiting before restarting..."
+      sleep 8
+      echo "Restarting communicator bot..."
       python -m src.communicator_bot.main &
       COMM_PID=$!
     fi

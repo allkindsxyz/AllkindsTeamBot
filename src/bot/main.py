@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
 from src.core.config import get_settings
 from src.bot.handlers import register_handlers
+from src.bot.utils.webhook import reset_webhook
 from src.bot.middlewares.db_middleware import DbSessionMiddleware
 from src.bot.middlewares.logging_middleware import StateLoggingMiddleware
 from src.db.base import async_session_factory
@@ -315,6 +316,12 @@ async def run_polling_bot():
             # Windows doesn't support SIGTERM
             logger.warning(f"Failed to set signal handler for {sig}: {e}")
     
+    # Ensure webhook is reset properly
+    logger.info("Resetting webhook before starting")
+    success = await reset_webhook(bot)
+    if not success:
+        logger.warning("Failed to reset webhook properly, continuing anyway")
+
     # Start polling with enhanced exception handling
     try:
         logger.info("Bot started polling for updates. Press Ctrl+C to stop")
@@ -353,6 +360,16 @@ async def lifespan(app: web.Application):
     
     # Cleanup on shutdown
     logger.info("Application shutting down, cleaning up resources")
+
+def register_all_handlers(dp: Dispatcher):
+    """Register all command handlers with the dispatcher."""
+    from src.bot.handlers import register_user_commands, register_admin_commands
+    
+    # Include all handler modules
+    register_user_commands(dp)
+    register_admin_commands(dp)
+    logger.info("All handlers registered successfully")
+
 
 async def main():
     """Main entry point for the bot."""

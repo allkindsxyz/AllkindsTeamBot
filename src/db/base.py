@@ -115,8 +115,8 @@ connect_args = {}
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
     # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
-        "timeout": 60, 
-        "command_timeout": 60, 
+        "timeout": 120,  # Increased from 60 to 120
+        "command_timeout": 120,  # Increased from 60 to 120
         "server_settings": {
             "application_name": "allkinds",
             "idle_in_transaction_session_timeout": "60000"
@@ -130,10 +130,10 @@ engine = create_async_engine(
     echo=settings.debug,
     future=True,
     pool_pre_ping=True,               # Verify connections before using them
-    pool_recycle=120,                 # Recycle connections more frequently (2 minutes)
-    pool_timeout=60,                  # Increased timeout for cloud environments
-    pool_size=5,                      # Smaller pool size for better stability
-    max_overflow=10,                  # Fewer overflow connections to prevent resource exhaustion
+    pool_recycle=60,                  # Recycle connections more frequently (1 minute)
+    pool_timeout=120,                 # Increased timeout for cloud environments
+    pool_size=3,                      # Smaller pool size for better stability
+    max_overflow=5,                   # Fewer overflow connections to prevent resource exhaustion
     pool_use_lifo=True,               # Use LIFO for better connection reuse
     connect_args=connect_args         # Database-specific connection arguments
 )
@@ -184,8 +184,8 @@ def get_async_engine(*args, **kwargs):
     
     # Set connection parameters with sensible timeouts
     connect_args = {
-        "timeout": 60, 
-        "command_timeout": 60, 
+        "timeout": 120,  # Increased from 60 to 120
+        "command_timeout": 120,  # Increased from 60 to 120
         "server_settings": {
             "application_name": "allkinds",
             "idle_in_transaction_session_timeout": "60000"
