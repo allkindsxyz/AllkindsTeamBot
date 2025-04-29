@@ -34,8 +34,7 @@ check_health() {
   fi
 }
 
-# Function to run health check in a separate process
-start_health_server
+# Function to start health check in a separate process
 start_health_checker() {
   log "Starting health check monitor"
   while true; do
@@ -201,22 +200,60 @@ verify_bot_token || {
   }
 }
 
-# Start the bot
-
 # Function to start the health server
 start_health_server() {
-  log "Starting health server on port ${PORT}..."
-  python3 health_server.py &
+  log "Starting health server on PORT=${PORT}..."
+  
+  # Kill any existing health server processes
+  pkill -f "python3 health_server.py" || true
+  
+  # Ensure health_server.py is executable
+  chmod +x health_server.py || true
+  
+  # Start the health server with the specified port and make sure it binds to 0.0.0.0
+  # Use daemon mode to ensure proper threading
+  PORT=${PORT} python3 health_server.py daemon &
   HEALTH_SERVER_PID=$!
   log "Health server started with PID: ${HEALTH_SERVER_PID}"
   
   # Verify health server is running
-  sleep 2
+  sleep 3
   if ps -p ${HEALTH_SERVER_PID} > /dev/null; then
-    log "Health server is running"
-    return 0
+    log "Health server process is running, checking endpoint..."
+    
+    # Test if the health server is responding
+    for i in {1..5}; do
+      if curl -s http://localhost:${PORT}/health > /dev/null; then
+        log "Health server endpoint is responding!"
+        return 0
+      else
+        log "Waiting for health server to respond (attempt $i/5)..."
+        sleep 2
+      fi
+    done
+    
+    log "WARNING: Health server process is running but endpoint is not responding!"
+    log "This may cause Railway health checks to fail."
+    
+    # Try restarting on different port as a last resort
+    if [[ "${PORT}" != "8080" ]]; then
+      log "Trying alternate port 8080 for health server..."
+      kill ${HEALTH_SERVER_PID} || true
+      PORT=8080 python3 health_server.py daemon &
+      HEALTH_SERVER_PID=$!
+      log "Health server restarted on port 8080 with PID: ${HEALTH_SERVER_PID}"
+    fi
+    
+    return 1
   else
     log "WARNING: Health server failed to start!"
+    
+    # Try running it in foreground mode for debugging
+    log "DEBUG: Trying to start health server with output..."
+    PORT=${PORT} python3 health_server.py &
+    HEALTH_SERVER_PID=$!
+    log "Health server started in debug mode with PID: ${HEALTH_SERVER_PID}"
+    
     return 1
   fi
 }
@@ -258,7 +295,26 @@ run_bot() {
 
 # Main loop to keep the bot running
 log "=== STARTING BOT RUNNER ==="
-start_health_server
+
+# Start health server first - this is critical for Railway!
+for attempt in {1..3}; do
+  log "Starting health server (attempt $attempt/3)..."
+  if start_health_server; then
+    log "Health server started successfully!"
+    break
+  else
+    if [[ $attempt -eq 3 ]]; then
+      log "CRITICAL: Failed to start health server after 3 attempts!"
+      log "Railway health checks will fail - attempting to continue anyway."
+      # Continue anyway - we'll try to start it again in the background
+    else
+      log "Health server failed to start, retrying in 5 seconds..."
+      sleep 5
+    fi
+  fi
+done
+
+# Start health checker in background
 start_health_checker
 
 # Keep track of consecutive failures
@@ -280,6 +336,12 @@ while true; do
       log "Bot token appears to be invalid after failure. Verifying environment..."
       ensure_env_loaded
     }
+    
+    # Verify health server is still running
+    if ! ps -p ${HEALTH_SERVER_PID} > /dev/null; then
+      log "Health server is not running! Attempting to restart..."
+      start_health_server
+    fi
     
     if [ $consecutive_failures -ge $max_consecutive_failures ]; then
       log "Too many consecutive failures. Sleeping for longer period before retry."

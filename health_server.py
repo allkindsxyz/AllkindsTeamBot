@@ -3,16 +3,32 @@ import socketserver
 import os
 import subprocess
 import time
+import threading
+import sys
+import logging
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("health_server")
+
+# Use PORT from environment variable (Railway sets this)
 PORT = int(os.environ.get("PORT", 8080))
 
 class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Override to use our logger instead of stderr
+        logger.info("%s - %s", self.address_string(), format % args)
+    
     def do_GET(self):
-        if self.path == "/health":
+        if self.path == "/health" or self.path == "/":
+            logger.info("Health check requested")
             self.send_response(200)
-            self.send_header("Content-type", "text/plain")
+            self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(b"Bot is running")
+            self.wfile.write(b'{"status":"ok","message":"Bot is running"}')
         elif self.path == "/status":
             # Get bot process status
             try:
@@ -62,13 +78,47 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Not found. Available endpoints: /health, /status, /logs, /restart")
 
-print(f"Starting health check server on port {PORT}")
-print(f"Available endpoints:")
-print(f"  - /health: Basic health check")
-print(f"  - /status: Show bot processes")
-print(f"  - /logs: Show last 50 lines of bot logs")
-print(f"  - /restart: Restart the bot process")
+def run_server():
+    """Run the server in a way that can be properly terminated"""
+    try:
+        # Ensure the TCP server can reuse the address
+        socketserver.TCPServer.allow_reuse_address = True
+        
+        # Create the server with the handler
+        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
+            logger.info(f"Health check server running at http://0.0.0.0:{PORT}")
+            logger.info(f"Available endpoints: /health, /status, /logs, /restart")
+            
+            # Serve until interrupted
+            httpd.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Health server stopped by keyboard interrupt")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Error running health server: {e}")
+        sys.exit(1)
 
-with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
-    print(f"Health check server running at http://localhost:{PORT}")
-    httpd.serve_forever() 
+if __name__ == "__main__":
+    logger.info(f"Starting health check server on port {PORT}")
+    logger.info(f"Available endpoints:")
+    logger.info(f"  - /health: Basic health check")
+    logger.info(f"  - /status: Show bot processes")
+    logger.info(f"  - /logs: Show last 50 lines of bot logs")
+    logger.info(f"  - /restart: Restart the bot process")
+    
+    # Check if 'daemon' argument is provided
+    if len(sys.argv) > 1 and sys.argv[1] == 'daemon':
+        # Run in daemon mode
+        logger.info("Starting health server in daemon mode")
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        # Keep the main thread alive to prevent the daemon thread from exiting
+        try:
+            while True:
+                time.sleep(60)
+        except KeyboardInterrupt:
+            logger.info("Health server daemon stopped by keyboard interrupt")
+            sys.exit(0)
+    else:
+        # Run in foreground mode
+        run_server() 
