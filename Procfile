@@ -1,1 +1,2 @@
-web: python -m src.health & sleep 5 && python -m src.main & python -m src.communicator_bot.main & wait
+# Main webhook receiver on PORT env var (8080), individual bots on specific ports
+web: python -m src.health & sleep 3 && PORT=8081 python -m src.main & PORT=8082 python -m src.communicator_bot.main & wait

@@ -19,10 +19,10 @@ redis>=5.0.1
 # Web framework dependencies - explicitly required for Railway
 fastapi==0.110.0
 uvicorn==0.25.0
+httpx==0.25.0
 
 gunicorn>=21.2.0
 anyio>=4.0.0
-httpx>=0.25.0
 starlette>=0.27.0
 typing_extensions>=4.8.0
 websockets>=12.0
