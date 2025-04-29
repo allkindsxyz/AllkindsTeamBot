@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     COMMUNICATOR_BOT_TOKEN: str = "dummy_token"  # Default prevents validation error
     # ADMIN_IDS should hold the final list of ints
     ADMIN_IDS: List[int] = [123456789]  # Default prevents validation error
-    COMMUNICATOR_BOT_USERNAME: str = Field(default=os.environ.get("COMMUNICATOR_BOT_USERNAME", "AllkindsCommunicatorBot"), alias="COMMUNICATOR_BOT_USERNAME"), alias="COMMUNICATOR_BOT_USERNAME")
+    COMMUNICATOR_BOT_USERNAME: str = Field(default=os.environ.get("COMMUNICATOR_BOT_USERNAME", "AllkindsCommunicatorBot"), alias="COMMUNICATOR_BOT_USERNAME")
     
     # Webhook configuration
     USE_WEBHOOK: bool = Field(default=bool(os.environ.get('RAILWAY_ENVIRONMENT')), alias='USE_WEBHOOK')  # Use webhook on Railway
