@@ -105,6 +105,24 @@ async def reset_webhook():
     except Exception as e:
         logger.error(f"Error with direct webhook reset: {e}")
         return False
+    
+    # Try again with direct HTTP request as fallback
+    try:
+        import requests
+        logger.info("Trying reset webhook with direct HTTP request as fallback...")
+        response = requests.get(
+            f"https://api.telegram.org/bot{COMMUNICATOR_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        )
+        result = response.json()
+        if result.get("ok"):
+            logger.info("Webhook deleted successfully with direct HTTP request")
+            return True
+        else:
+            logger.error(f"Failed to delete webhook with direct request: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"Error with direct webhook reset: {e}")
+        return False
         
     try:
         logger.info("Resetting Telegram webhook...")
@@ -221,6 +239,27 @@ async def start_communicator_bot() -> None:
 
         # Verify token by getting bot info
         try:
+            # Check for bot username in environment
+            bot_username = os.environ.get("COMMUNICATOR_BOT_USERNAME", "")
+            if not bot_username:
+                from src.core.config import get_settings
+                settings = get_settings()
+                bot_username = settings.COMMUNICATOR_BOT_USERNAME
+                logger.info(f"Using bot username from settings: {bot_username}")
+            else:
+                logger.info(f"Using bot username from environment: {bot_username}")
+                
+            # Remove @ if it's included
+            if bot_username and bot_username.startswith("@"):
+                bot_username = bot_username[1:]
+                logger.info(f"Removed @ prefix from bot username: {bot_username}")
+                
+            # Log token information for debugging (safely)
+            if COMMUNICATOR_BOT_TOKEN:
+                token_prefix = COMMUNICATOR_BOT_TOKEN[:4] if len(COMMUNICATOR_BOT_TOKEN) > 4 else "N/A"
+                logger.info(f"Bot token available (prefix: {token_prefix}...)")
+            else:
+                logger.error("Bot token is empty or not set!")
             # Check for bot username in environment
             bot_username = os.environ.get("COMMUNICATOR_BOT_USERNAME", "")
             if not bot_username:

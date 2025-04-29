@@ -53,7 +53,22 @@ def process_database_url(url):
             logger.info("Using SQLite database")
             return url
 
+
     # Parse the URL to handle parameters safely
+    try:
+        # Handle Railway's postgres:// format
+        if url.startswith('postgres://') or url.startswith('postgresql://'):
+            # For asyncpg, we need to use postgresql+asyncpg://
+            if 'asyncpg' not in url:
+                if url.startswith('postgres://'):
+                    url = url.replace('postgres://', 'postgresql+asyncpg://', 1)
+                else:
+                    url = url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+            
+            # We no longer modify hostnames as they need to remain as provided by Railway
+            logger.info(f"Processed database URL (starts with): {url[:15]}...")
+            return url
+
     try:
         # Handle Railway's postgres:// format
         if url.startswith('postgres://') or url.startswith('postgresql://'):
@@ -116,12 +131,14 @@ connect_args = {}
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
     # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
-        "timeout": 120, 
-        "command_timeout": 120, 
+        "timeout": 60, 
+        "command_timeout": 60, 
         "server_settings": {
             "application_name": "allkinds",
             "idle_in_transaction_session_timeout": "60000"
         },
+        "statement_cache_size": 0
+    },
         "statement_cache_size": 0
     }
     
@@ -303,19 +320,7 @@ async def init_models(engine):
                         engine = create_async_engine(
                             database_url,
                             connect_args=new_connect_args,
-                            pool_pre_ping=True,
-                            pool_recycle=60
-                        )
-                        logger.info("Created new engine with simplified SSL configuration")
-                    except Exception as ssl_e:
-                        logger.error(f"Failed to create alternative SSL engine: {ssl_e}")
-                
-                await asyncio.sleep(retry_delay * 2)  # Sleep longer after cancellation
-                retry_delay *= 2  # Exponential backoff
-            else:
-                logger.error(f"Database initialization failed after {max_retries} attempts due to cancellation: {e}")
-                
-                # In production with cancellation errors, we might still be able to create tables
+                            pool_recycle=120, pool_timeout=60, pool_size=5, max_overflow=10, pool_use_lifo=True, we might still be able to create tables
                 if IS_RAILWAY:
                     logger.warning("Attempting to continue despite cancellation in Railway...")
                     try:
