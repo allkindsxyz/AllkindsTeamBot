@@ -128,13 +128,9 @@ if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_
     # Add SSL mode for Railway deployment
     if IS_RAILWAY:
         logger.info("Running on Railway, configuring SSL parameters")
-        # Instead of disabling SSL, use require with an unverified context
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connect_args["ssl"] = "require"
-        connect_args["ssl_context"] = ssl_context
-        logger.info("Configured SSL parameters: require mode with verification disabled")
+        # Use prefer mode without the context - this is what asyncpg supports
+        connect_args["ssl"] = "prefer"
+        logger.info("Configured SSL parameters: prefer mode")
 
 # Create async engine with enhanced parameters for better connection handling in cloud environments
 engine = create_async_engine(
@@ -208,12 +204,8 @@ def get_async_engine(*args, **kwargs):
     # Add SSL mode for Railway deployment
     if IS_RAILWAY:
         logger.info("Running on Railway in get_async_engine, configuring SSL parameters")
-        # Instead of disabling SSL, use require with an unverified context
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connect_args["ssl"] = "require"
-        connect_args["ssl_context"] = ssl_context
+        # Use prefer mode without the context - this is what asyncpg supports
+        connect_args["ssl"] = "prefer"
     
     # Use a separate pool for statements, with retries
     engine_args = {
@@ -296,9 +288,15 @@ async def init_models(engine):
                     try:
                         # Create a new engine with alternate SSL settings for next attempt
                         from sqlalchemy.ext.asyncio import create_async_engine
-                        ssl_context = ssl._create_unverified_context()
-                        new_connect_args = engine.url.query.get('connect_args', {})
-                        new_connect_args['ssl_context'] = ssl_context
+                        # Use a simpler approach for SSL configuration
+                        new_connect_args = {
+                            "timeout": 120,
+                            "command_timeout": 120,
+                            "ssl": "allow",  # Try 'allow' mode, which is less strict
+                            "server_settings": {
+                                "application_name": "allkinds"
+                            }
+                        }
                         
                         # Create a new engine with the updated settings
                         database_url = str(engine.url)
@@ -308,7 +306,7 @@ async def init_models(engine):
                             pool_pre_ping=True,
                             pool_recycle=60
                         )
-                        logger.info("Created new engine with custom SSL context")
+                        logger.info("Created new engine with simplified SSL configuration")
                     except Exception as ssl_e:
                         logger.error(f"Failed to create alternative SSL engine: {ssl_e}")
                 
@@ -328,8 +326,8 @@ async def init_models(engine):
                             logger.info("Attempting direct asyncpg connection as last resort")
                             conn = await asyncpg.connect(
                                 db_url, 
-                                ssl="disable",
-                                command_timeout=60
+                                ssl="allow",  # Use 'allow' for the last resort connection
+                                timeout=60
                             )
                             await conn.close()
                             logger.info("Direct connection succeeded, service should continue")
