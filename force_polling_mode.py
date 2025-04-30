@@ -2,188 +2,197 @@
 """
 Force Polling Mode Script
 
-This script ensures only one instance of the bot is running in polling mode.
-It will:
-1. Kill any existing bot processes
-2. Delete the webhook
-3. Run the bot in polling mode with extensive debugging
+This script forces both bots to use polling mode by:
+1. Directly setting USE_WEBHOOK=false in the environment
+2. Actively deleting any configured webhooks
+3. Creating/updating a .env file with the correct settings
 """
 
 import os
 import sys
-import signal
-import subprocess
-import time
-import json
-import requests
 import logging
-import psutil
-from pathlib import Path
+import asyncio
+import requests
+import aiohttp
+import ssl
+import subprocess
 from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(f'logs/force_polling_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
 
-def find_and_kill_bot_processes():
-    """Find and kill any existing bot processes."""
-    killed_count = 0
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            # Check for bot processes
-            if proc.info['cmdline'] and any('src.bot.main' in cmd for cmd in proc.info['cmdline']):
-                if proc.pid != os.getpid():  # Don't kill ourselves
-                    logger.info(f"Killing bot process: {proc.pid}")
-                    proc.kill()
-                    killed_count += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-    
-    return killed_count
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger.info("Loaded environment variables from .env file")
+except ImportError:
+    logger.warning("python-dotenv not installed, continuing without loading .env file")
 
-def delete_webhook(bot_token):
-    """Delete any existing webhook."""
-    try:
-        url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook?drop_pending_updates=true"
-        response = requests.get(url)
-        data = response.json()
-        
-        if data.get('ok'):
-            logger.info("Webhook deleted successfully")
-        else:
-            logger.error(f"Failed to delete webhook: {data}")
-        
-        # Also check webhook info
-        info_url = f"https://api.telegram.org/bot{bot_token}/getWebhookInfo"
-        info_response = requests.get(info_url)
-        info_data = info_response.json()
-        
-        if info_data.get('ok'):
-            logger.info(f"Webhook info: {json.dumps(info_data['result'], indent=2)}")
-        
-        return data.get('ok', False)
-    except Exception as e:
-        logger.error(f"Error deleting webhook: {e}")
+# Get tokens from environment
+MAIN_BOT_TOKEN = os.environ.get("BOT_TOKEN")
+COMMUNICATOR_BOT_TOKEN = os.environ.get("COMMUNICATOR_BOT_TOKEN")
+
+async def reset_webhook_async(bot_token, bot_name="Unknown"):
+    """Reset webhook for a bot using async HTTP request."""
+    if not bot_token:
+        logger.error(f"Cannot reset webhook for {bot_name}: Token not provided")
         return False
-
-def run_bot_in_polling_mode():
-    """Run the bot in polling mode with debugging enabled."""
-    logger.info("Starting bot in polling mode")
-    
-    # Set environment variables
-    env = os.environ.copy()
-    env['USE_WEBHOOK'] = 'false'
-    env['DEBUG_LEVEL'] = 'DEBUG'
-    env['PYTHONUNBUFFERED'] = '1'
-    
-    cmd = [sys.executable, '-m', 'src.bot.main']
-    
-    try:
-        # Run the bot and capture output
-        process = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
         
-        logger.info(f"Bot started with PID: {process.pid}")
-        
-        # Stream output in real-time
-        for line in process.stdout:
-            print(line, end='')
-            if "START COMMAND TRIGGERED" in line:
-                logger.info("DETECTED START COMMAND IN LOGS")
-        
-        # Wait for process to finish
-        return_code = process.wait()
-        logger.info(f"Bot exited with code: {return_code}")
-        return return_code
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt, stopping bot")
-        if 'process' in locals():
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-        return 1
-    except Exception as e:
-        logger.error(f"Error running bot: {e}")
-        return 1
-
-def main():
-    """Main entry point."""
-    logger.info("=== STARTING FORCE POLLING MODE ===")
+    logger.info(f"Resetting webhook for {bot_name}...")
     
-    # Check if lock file exists
-    lock_path = Path('force_polling.lock')
-    if lock_path.exists():
-        pid = lock_path.read_text().strip()
-        logger.warning(f"Lock file exists with PID: {pid}")
+    # Create a default SSL context that doesn't verify
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    
+    # Create a session with relaxed SSL configuration
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        # First, check current webhook status
         try:
-            # Check if process is still running
-            pid = int(pid)
-            if psutil.pid_exists(pid):
-                logger.error(f"Another instance already running with PID: {pid}")
-                return 1
-            else:
-                logger.info(f"Stale lock file found, removing")
-                lock_path.unlink()
-        except (ValueError, TypeError):
-            logger.warning("Invalid PID in lock file, removing")
-            lock_path.unlink()
+            async with session.get(
+                f"https://api.telegram.org/bot{bot_token}/getWebhookInfo"
+            ) as response:
+                if response.status == 200:
+                    webhook_info = await response.json()
+                    if webhook_info.get("ok"):
+                        current_url = webhook_info.get("result", {}).get("url", "None")
+                        logger.info(f"{bot_name} current webhook URL: {current_url}")
+                else:
+                    logger.error(f"Failed to get webhook info: HTTP {response.status}")
+        except Exception as e:
+            logger.error(f"Error getting webhook info: {e}")
+        
+        # Force delete the webhook with drop_pending_updates
+        try:
+            async with session.get(
+                f"https://api.telegram.org/bot{bot_token}/deleteWebhook?drop_pending_updates=true"
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if result.get("ok"):
+                        logger.info(f"{bot_name} webhook deleted successfully")
+                        return True
+                    else:
+                        error = result.get("description", "Unknown error")
+                        logger.error(f"Failed to delete webhook: {error}")
+                else:
+                    logger.error(f"Failed to delete webhook: HTTP {response.status}")
+        except Exception as e:
+            logger.error(f"Error resetting webhook: {e}")
     
-    # Create lock file
-    lock_path.write_text(str(os.getpid()))
-    
+    # If async method failed, try with regular requests
     try:
-        # Step 1: Kill any existing bot processes
-        killed = find_and_kill_bot_processes()
-        logger.info(f"Killed {killed} existing bot processes")
-        
-        # Step 2: Delete webhook
-        bot_token = os.environ.get('BOT_TOKEN')
-        if not bot_token:
-            logger.error("BOT_TOKEN environment variable not set")
-            return 1
-        
-        success = delete_webhook(bot_token)
-        if not success:
-            logger.warning("Failed to delete webhook, continuing anyway")
-        
-        # Wait a bit for webhook to be fully cleared
-        logger.info("Waiting 3 seconds for webhook to clear...")
-        time.sleep(3)
-        
-        # Step 3: Run bot in polling mode
-        return_code = run_bot_in_polling_mode()
-        
-        return return_code
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-        return 0
-    finally:
-        # Clean up lock file
-        if lock_path.exists():
-            lock_path.unlink()
+        logger.info(f"Trying alternative method for {bot_name}...")
+        response = requests.get(
+            f"https://api.telegram.org/bot{bot_token}/deleteWebhook?drop_pending_updates=true",
+            verify=False,
+            timeout=10
+        )
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("ok"):
+                logger.info(f"{bot_name} webhook deleted successfully with alternative method")
+                return True
+            else:
+                error = result.get("description", "Unknown error")
+                logger.error(f"Failed to delete webhook with alternative method: {error}")
+        else:
+            logger.error(f"Failed to delete webhook: HTTP {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error with alternative webhook reset: {e}")
+    
+    return False
+
+def update_env_file():
+    """Create or update .env file with USE_WEBHOOK=false."""
+    env_file = ".env"
+    env_content = {}
+    
+    # Read existing .env file if it exists
+    if os.path.exists(env_file):
+        with open(env_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    env_content[key.strip()] = value.strip()
+    
+    # Update USE_WEBHOOK setting
+    env_content["USE_WEBHOOK"] = "false"
+    
+    # Write updated content back to .env file
+    with open(env_file, "w") as f:
+        f.write(f"# Updated by force_polling_mode.py at {datetime.now().isoformat()}\n")
+        for key, value in env_content.items():
+            f.write(f"{key}={value}\n")
+    
+    logger.info(f"Updated {env_file} with USE_WEBHOOK=false")
+    return True
+
+def verify_environment_vars():
+    """Verify that essential environment variables are set."""
+    required_vars = ["BOT_TOKEN", "COMMUNICATOR_BOT_TOKEN"]
+    missing_vars = []
+    
+    for var in required_vars:
+        if not os.environ.get(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error("Please set these variables in your .env file or environment before running this script")
+        return False
+    
+    logger.info("All required environment variables are set")
+    return True
+
+def set_environment_var():
+    """Directly set USE_WEBHOOK=false in the environment."""
+    os.environ["USE_WEBHOOK"] = "false"
+    logger.info("Set USE_WEBHOOK=false in the current environment")
+    return True
+
+async def main():
+    """Main function to force polling mode."""
+    logger.info("Starting force polling mode script...")
+    
+    # Verify environment variables
+    if not verify_environment_vars():
+        logger.error("Environment verification failed. Cannot continue.")
+        return False
+    
+    # Set the variable in the current environment
+    set_environment_var()
+    
+    # Update .env file
+    update_env_file()
+    
+    # Reset webhooks for both bots
+    main_bot_result = await reset_webhook_async(MAIN_BOT_TOKEN, "Main Bot")
+    comm_bot_result = await reset_webhook_async(COMMUNICATOR_BOT_TOKEN, "Communicator Bot")
+    
+    if main_bot_result and comm_bot_result:
+        logger.info("Successfully reset webhooks for both bots")
+    else:
+        logger.warning("Failed to reset webhooks for one or both bots")
+    
+    logger.info("================= SUMMARY =================")
+    logger.info("USE_WEBHOOK=false set in environment: ✅")
+    logger.info(f".env file updated with USE_WEBHOOK=false: ✅")
+    logger.info(f"Main Bot webhook reset: {'✅' if main_bot_result else '❌'}")
+    logger.info(f"Communicator Bot webhook reset: {'✅' if comm_bot_result else '❌'}")
+    logger.info("===========================================")
+    logger.info("To restart your application with polling mode:")
+    logger.info("1. Kill the current bot processes")
+    logger.info("2. Start the bots again with 'python -m src.main'")
+    
+    return True
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        logger.info("Script interrupted by user")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"Unhandled exception: {e}", exc_info=True)
-        sys.exit(1) 
+    asyncio.run(main()) 
