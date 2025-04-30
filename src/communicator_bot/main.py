@@ -89,6 +89,44 @@ async def reset_webhook():
     if not COMMUNICATOR_BOT_TOKEN:
         logger.error("Cannot reset webhook: No token available")
         return False
+    # Try with direct HTTP request as fallback
+    try:
+        logger.info("Trying reset webhook with direct HTTP request as fallback...")
+        import requests
+        response = requests.get(
+            f"https://api.telegram.org/bot{COMMUNICATOR_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true",
+            verify=False,
+            timeout=10
+        )
+        result = response.json()
+        if result.get("ok"):
+            logger.info("Webhook deleted successfully with direct HTTP request")
+            return True
+        else:
+            logger.error(f"Failed to delete webhook: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"Error with direct webhook reset: {e}")
+        return False
+    # Try with direct HTTP request as fallback
+    try:
+        logger.info("Trying reset webhook with direct HTTP request as fallback...")
+        import requests
+        response = requests.get(
+            f"https://api.telegram.org/bot{COMMUNICATOR_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true",
+            verify=False,
+            timeout=10
+        )
+        result = response.json()
+        if result.get("ok"):
+            logger.info("Webhook deleted successfully with direct HTTP request")
+            return True
+        else:
+            logger.error(f"Failed to delete webhook: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"Error with direct webhook reset: {e}")
+        return False
     
     # Try with direct HTTP request as fallback
     try:
@@ -205,7 +243,7 @@ async def setup_webhook_server():
         app.router.add_get("/ping", ping_handler)
         app.router.add_get("/health", health_handler)
         app.router.add_get("/", root_handler)
-        app.router.add_post("/webhook", webhook_handler)
+        app.router.add_post("/comm_webhook", webhook_handler)
         
         # Start the server
         runner = web.AppRunner(app)
@@ -216,9 +254,18 @@ async def setup_webhook_server():
         logger.info(f"Webhook server running on http://0.0.0.0:{port}")
         
         # Configure webhook URL
+        # Get webhook details from environment
         webhook_host = os.environ.get("WEBHOOK_HOST")
+        webhook_path = os.environ.get("COMMUNICATOR_WEBHOOK_PATH", "/comm_webhook")
+        
+        # Construct full webhook URL
         if webhook_host:
-            webhook_url = f"{webhook_host}/webhook"
+            # Make sure webhook host has https:// prefix
+            if not webhook_host.startswith("http"):
+                webhook_host = f"https://{webhook_host}"
+                
+            webhook_url = f"{webhook_host}{webhook_path}"
+            logger.info(f"Setting webhook URL: {webhook_url}")
             logger.info(f"Setting webhook URL: {webhook_url}")
             
             try:
@@ -316,7 +363,17 @@ async def start_communicator_bot() -> None:
 
         register_handlers(dp)
 
-        logger.info("Starting communicator bot in webhook mode...")
+        logger.info("Starting communicator bot in polling mode...")
+        
+        # Start polling
+        try:
+            logger.info("Bot started polling for updates")
+            await dp.start_polling(bot, skip_updates=True)
+        except asyncio.CancelledError:
+            logger.info("Bot polling cancelled")
+        except Exception as e:
+            logger.error(f"Error during polling: {e}")
+            logger.exception("Full traceback:")logger.info("Starting communicator bot in webhook mode...")
         await setup_webhook_server()
         
     except Exception as e:

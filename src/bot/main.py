@@ -162,7 +162,7 @@ async def run_webhook_bot():
     
     # Get webhook settings from environment
     webhook_host = os.environ.get("WEBHOOK_HOST")
-    webhook_path = os.environ.get("WEBHOOK_PATH", "/webhook")
+    webhook_path = "/webhook"
     webapp_host = "0.0.0.0"
     webapp_port = int(os.environ.get("BOT_PORT", 8081))
     
@@ -206,7 +206,7 @@ async def run_webhook_bot():
     # Set up webhook
     try:
         if webhook_host:
-            webhook_url = f"{webhook_host}{webhook_path}"
+            webhook_url = f"https://{webhook_host}/webhook"
             logger.info(f"Attempting to set webhook to {webhook_url}")
             await bot.set_webhook(url=webhook_url)
             logger.info(f"Webhook set to {webhook_url}")
@@ -335,7 +335,24 @@ async def run_polling_bot():
     diagnostics = get_diagnostics_report()
     logger.info(f"System diagnostics: {diagnostics}")
     
-    # Set up signal handlers
+    # Ensure webhook is completely removed with retries
+for attempt in range(3):
+    logger.info(f"Webhook deletion attempt {attempt+1}/3")
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook deleted successfully")
+        # Verify deletion
+        webhook_info = await bot.get_webhook_info()
+        if not webhook_info.url:
+            logger.info("Confirmed webhook is not set")
+            break
+        else:
+            logger.warning(f"Webhook still set to {webhook_info.url}, retrying...")
+    except Exception as e:
+        logger.error(f"Error deleting webhook: {e}")
+    await asyncio.sleep(1)
+
+# Set up signal handlers
     def signal_handler(*args):
         logger.info("Received termination signal")
         raise asyncio.CancelledError()
@@ -486,11 +503,16 @@ async def main():
                 logger.info("Running startup integrity checks...")
                 await run_startup_tasks()
             
-            # Decide between webhook and polling modes
-            if settings.USE_WEBHOOK:
-                await run_webhook_bot()
-            else:
-                await run_polling_bot()
+            # Force polling mode regardless of settings
+logger.info("USE_WEBHOOK setting overridden to False, using polling mode")
+
+                
+# Add detailed diagnostics
+logger.info("Starting bot in polling mode with detailed diagnostics:")
+logger.info(f"- Bot Token available: {bool(BOT_TOKEN)}")
+logger.info(f"- Database URL configured: {bool(settings.db_url)}")
+logger.info(f"- Using storage: {\'Redis\' if settings.REDIS_URL else \'Memory\'}")
+await run_polling_bot()
         except Exception as e:
             logger.error(f"Critical error in main function: {e}")
             traceback.print_exc()

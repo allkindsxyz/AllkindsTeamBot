@@ -120,7 +120,10 @@ async def main():
     logger.info(f"Webhook URL: {webhook_url}")
     
     # Set environment variables for children processes
-    os.environ["WEBHOOK_HOST"] = webhook_url
+    # Force polling mode
+os.environ["USE_WEBHOOK"] = "false"
+
+
     os.environ["WEBHOOK_PATH"] = "/webhook"
     
     # Start health check in a separate task

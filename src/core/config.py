@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     COMMUNICATOR_BOT_USERNAME: str = Field(default=os.environ.get("COMMUNICATOR_BOT_USERNAME", "AllkindsCommunicatorBot"), alias="COMMUNICATOR_BOT_USERNAME")
     
     # Webhook configuration
-    USE_WEBHOOK: bool = Field(default=bool(os.environ.get('RAILWAY_ENVIRONMENT')), alias='USE_WEBHOOK')  # Use webhook on Railway
+    USE_WEBHOOK: bool = Field(default=bool(os.environ.get("RAILWAY_ENVIRONMENT")), alias="USE_WEBHOOK")), alias="USE_WEBHOOK")), alias='USE_WEBHOOK')  # Use webhook on Railway
     WEBHOOK_HOST: str = Field(default="https://allkindsteambot-production.up.railway.app", alias='WEBHOOK_HOST')
     WEBHOOK_PATH: str = Field(default="/bot/webhook", alias='WEBHOOK_PATH')  # Use /bot/webhook path
     WEBHOOK_SSL_CERT: str = Field(default="webhook_cert.pem", alias='WEBHOOK_SSL_CERT')
