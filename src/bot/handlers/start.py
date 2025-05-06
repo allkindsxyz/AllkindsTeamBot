@@ -1,8 +1,16 @@
+"""
+start.py - Bot message and callback handlers - start
+
+Part of AllkindsTeamBot - A Telegram bot service that connects people based on shared values.
+
+This file contains message and callback handlers for bot interactions
+"""
+
 from aiogram import Dispatcher, F, types, Bot
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
-from aiogram.utils.deep_linking import decode_payload, create_start_link
+from aiogram.utils.deep_linking import create_start_link, decode_payload
 from loguru import logger
 import base64
 import asyncio
@@ -18,6 +26,9 @@ from sqlalchemy import select, func, delete, update, and_
 # from src.bot.config import bot_settings # No longer needed
 from src.core.config import get_settings # Import main settings
 from src.bot.keyboards.inline import (
+
+    # Get the user from the database
+
     get_start_menu_keyboard, 
     get_group_menu_keyboard, 
     get_answer_keyboard_with_skip,
@@ -107,6 +118,11 @@ async def get_unanswered_question_count(session: AsyncSession, user_id: int, gro
     return count
 
 
+
+
+async def count_unanswered_questions(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Alias for get_unanswered_question_count for backward compatibility."""
+    return await get_unanswered_question_count(session, user_id, group_id)
 async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
     """Handle /start command."""
     import base64
@@ -122,6 +138,18 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
     logger.info(f"Bot running in: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')} environment")
     
     try:
+        # Special handling for load_answered_questions
+        if callback.data == "load_answered_questions":
+            logger.info(f"Debug callback redirecting to on_load_answered_questions in load_answered_questions.py")
+            try:
+                await on_load_answered_questions(callback, state, session)
+                return
+            except Exception as e:
+                logger.error(f"Error in on_load_answered_questions: {e}", exc_info=True)
+                await callback.answer("Error loading your answers. Please try again.", show_alert=True)
+                return
+        
+
         # Basic logging
         logger.info(f"Start command triggered from user {message.from_user.id}")
         
@@ -214,19 +242,17 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
         # Create state if it doesn't exist
         if not state:
             logger.info("State not provided, creating a new one")
-            try:
-                # Replace the attempt to create state manually (which doesn't work in this context)
-                # Instead, we'll just log a warning and continue without state
-                logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
-                
-                # REMOVE THIS PROBLEMATIC CODE:
-                # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
-                # logger.info("Successfully created state context")
-            except Exception as state_error:
-                logger.error(f"Failed to create state context: {state_error}")
-                logger.exception("State creation traceback:")
-                # Continue without state
-        
+            # This code was causing syntax errors and has been commented out
+            logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
+            
+            # REMOVE THIS PROBLEMATIC CODE:
+            # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+            # logger.info("Successfully created state context")
+            
+            # These lines were part of a try-except block causing syntax errors
+            # logger.error("Failed to create state context")
+            # logger.exception("State creation traceback:")
+            # Continue without state
         # If user is already in groups, show the group menu
         if user_groups:
             # User is already in some group
@@ -234,27 +260,27 @@ async def cmd_start(message: types.Message, command: CommandObject = None, state
             group = user_groups[0]  # Take the first group
             logger.info(f"User is in group {group.id}, showing group menu")
             
-            try:
+            logger.warning("State not provided, continuing without state")  # Fixed problematic try-except
                 # Verify the group still exists
-                if not await group_repo.get(session, group.id):
-                    logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
-                    await message.answer("This group was deleted.")
-                    await show_welcome_menu(message)
-                    return
-            
+#                 if not await group_repo.get(session, group.id):
+#                     logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+#                     await message.answer("This group was deleted.")
+#                     await show_welcome_menu(message)
+#                     return
+#             
                 # Show the group menu
-                await show_group_menu(
-                    message=message,
-                    group_id=group.id,
-                    group_name=group.name,
-                    state=state,
-                    session=session
-                )
-            except Exception as group_menu_error:
-                logger.error(f"Error showing group menu: {group_menu_error}")
-                logger.exception("Group menu traceback:")
-                await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
-                return
+#                 await show_group_menu(
+#                     message=message,
+#                     group_id=group.id,
+#                     group_name=group.name,
+#                     state=state,
+#                     session=session
+#                 )
+#             except Exception as group_menu_error:
+#                 logger.error(f"Error showing group menu: {group_menu_error}")
+#                 logger.exception("Group menu traceback:")
+#                 await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
+#                 return
         else:
             # User is not in any group yet
             logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
@@ -467,7 +493,8 @@ async def check_and_display_next_question(message: types.Message, db_user, group
                 logger.error(f"Error in fallback get_next_question_for_user: {e}", exc_info=True)
                 next_question = None
         
-        # If we found a question, display it
+        # Always prioritize new questions - they should be displayed immediately
+            # If we found a question, display it
         if next_question:
             # Double check it's not already answered (extreme caution)
             if next_question.id in answered_ids:
@@ -550,111 +577,2316 @@ async def can_delete_question(user_id: int, question, session: AsyncSession) -> 
         return False
 
 
-async def on_load_answered_questions(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    """Handle the 'Load answered questions' button click."""
-    await callback.answer("Loading your answered questions...")
+# Moved to load_answered_questions.py
+
+
+async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle when user is invited to a specific group."""
+    user = message.from_user
     
-    # Get user from DB
-    user_tg = callback.from_user
-    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-    if not db_user:
-        logger.error(f"User {user_tg.id} not found in DB when loading answered questions")
-        await callback.message.answer("Error: Could not find your user account. Please try /start again.")
-        return
-    
-    # Get current group from state
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    if not group_id:
-        logger.error(f"No group_id found in state for user {user_tg.id}")
-        await callback.message.answer("Error: Could not determine your current group.")
-        return
-    
-    # Get group info
+    # Fetch group details from database
     group = await group_repo.get(session, group_id)
     if not group:
-        logger.error(f"Group {group_id} not found in DB")
-        await callback.message.answer("Error: Your team no longer exists.")
+        logger.error(f"Group {group_id} not found in database")
+        await message.answer("Sorry, this group no longer exists.")
+        return
+        
+    group_name = group.name
+    
+    logger.info(f"User {user.id} received invite to group {group_id} ({group_name})")
+    
+    welcome_text = (
+        f"👋 Welcome to Allkinds, {user.first_name}!\n\n"
+        f"You've been invited to join <b>{group_name}</b>.\n\n"
+        "Would you like to join this Team?"
+    )
+    
+    # Create keyboard with join/cancel options
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Join Team", callback_data=f"join_group:{group_id}"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_join"),
+        ]
+    ])
+    
+    # Store group_id in state
+    if state:
+        await state.update_data(invited_group_id=group_id)
+    
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def show_welcome_menu(message: types.Message) -> None:
+    """Show the welcome menu for the bot."""
+    # Improved logging for debugging
+    logger.info(f"Showing welcome menu to user {message.from_user.id}")
+    
+    keyboard = get_start_menu_keyboard()
+    
+    # Log keyboard structure to confirm it's generated correctly
+    logger.info(f"Generated keyboard structure: {keyboard}")
+    
+    welcome_text = (
+        "👋 Welcome to <b>AllKinds</b>!\n\n"
+        "This bot helps you connect with people who share your values.\n\n"
+        "What would you like to do?"
+    )
+    
+    try:
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"Welcome menu sent successfully to user {message.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending welcome menu: {e}")
+
+
+async def on_create_team(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle create team button callback."""
+    await callback.answer()
+    
+    text = (
+        "Let's create a new Team! 🚀\n\n"
+        "Please enter a name for your Team:"
+    )
+    
+    # Set user state to waiting for team name
+    await state.set_state(TeamCreation.waiting_for_name)
+    
+    await callback.message.answer(text)
+
+
+async def on_join_team(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle join team button callback."""
+    logger.info(f"User {callback.from_user.id} clicked Join Team button")
+    await callback.answer()
+    
+    # Get current state data
+    data = await state.get_data()
+    current_group_id = data.get("current_group_id")
+    
+    # Log current state for debugging
+    logger.info(f"User {callback.from_user.id} current state data: group_id={current_group_id}, all data: {data}")
+    
+    # Clear current group info to allow joining a new group
+    if current_group_id:
+        logger.info(f"User {callback.from_user.id} is currently in group {current_group_id}, clearing for join flow")
+        await state.update_data(current_group_id=None, current_group_name=None)
+    
+    text = (
+        "To join a Team, you need an invitation link or code.\n\n"
+        "Please enter the invitation code or ask the Team creator for an invitation link."
+    )
+    
+    # Set user state to waiting for team code
+    await state.set_state(TeamJoining.waiting_for_code)
+    current_state = await state.get_state()
+    logger.info(f"Set user {callback.from_user.id} state to {current_state}")
+    
+    try:
+        msg = await callback.message.answer(text)
+        logger.info(f"Successfully sent join team prompt to user {callback.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending join team prompt: {e}")
+        await callback.message.answer("An error occurred. Please try again by clicking /start.")
+
+
+async def on_cancel_join(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancel join button callback."""
+    await callback.answer("Canceled joining the team")
+    
+    # Clear state and return to main menu
+    await state.clear()
+    await show_welcome_menu(callback.message)
+
+
+async def process_team_name(message: types.Message, state: FSMContext) -> None:
+    """Process team name input from user."""
+    team_name = message.text.strip()
+    
+    if len(team_name) < 3:
+        await message.answer("Team name is too short. Please use at least 3 characters.")
         return
     
-    # Get user's answers for this group
-    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
-    if not answers:
-        await callback.message.answer("You haven't answered any questions in this team yet.")
+    if len(team_name) > 50:
+        await message.answer("Team name is too long. Please use at most 50 characters.")
         return
     
-    # Get the questions for these answers
-    question_ids = [a.question_id for a in answers]
-    questions = await question_repo.get_questions_by_ids(session, question_ids)
+    # Store the team name
+    await state.update_data(team_name=team_name)
     
-    # Create a map of question_id -> question for quick lookup
-    question_map = {q.id: q for q in questions}
+    # Ask for team description
+    await message.answer(
+        "Great! Now please provide a short description for your Team (optional).\n\n"
+        "Or type /skip to skip this step."
+    )
     
-    # Create a map of question_id -> answer for quick lookup
-    answer_map = {a.question_id: a for a in answers}
+    # Update state
+    await state.set_state(TeamCreation.waiting_for_description)
+
+
+async def process_team_description(message: types.Message, state: FSMContext) -> None:
+    """Process team description input from user."""
+    # Check for skip command - handle both as command and as text
+    if message.text.strip() == "/skip":
+        logger.info("User skipped team description")
+        description = ""
+    else:
+        description = message.text.strip()
+        logger.info(f"User provided team description: {description[:20]}...")
     
-    # Send a message for each answered question
-    sent_count = 0
-    for question_id, answer in answer_map.items():
-        # Skip if question no longer exists (was deleted)
-        if question_id not in question_map:
-            continue
+    # Store the description
+    await state.update_data(team_description=description)
+    
+    # Get the stored team name
+    data = await state.get_data()
+    team_name = data.get("team_name", "Unknown Team")
+    
+    # Ask for confirmation
+    confirmation_text = (
+        f"Please confirm your team details:\n\n"
+        f"Name: {team_name}\n"
+    )
+    
+    if description:
+        confirmation_text += f"Description: {description}\n\n"
+    else:
+        confirmation_text += "Description: None\n\n"
+    
+    confirmation_text += "Is this correct?"
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Confirm", callback_data="confirm_team"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_team"),
+        ]
+    ])
+    
+    logger.info(f"Showing confirmation for team: {team_name}")
+    await message.answer(confirmation_text, reply_markup=keyboard)
+    
+    # Update state
+    await state.set_state(TeamCreation.confirm_creation)
+    current_state_check = await state.get_state() # Add check
+    logger.info(f"State set to: {current_state_check} before showing confirmation.") # Add log
+"""
+start.py - Bot message and callback handlers - start
+
+Part of AllkindsTeamBot - A Telegram bot service that connects people based on shared values.
+
+This file contains message and callback handlers for bot interactions
+"""
+
+from aiogram import Dispatcher, F, types, Bot
+from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
+from aiogram.utils.deep_linking import create_start_link, decode_payload
+from loguru import logger
+import base64
+import asyncio
+import time
+from datetime import datetime
+import re
+import logging
+import os
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, delete, update, and_
+
+# from src.bot.config import bot_settings # No longer needed
+from src.core.config import get_settings # Import main settings
+from src.bot.keyboards.inline import (
+
+    # Get the user from the database
+
+    get_start_menu_keyboard, 
+    get_group_menu_keyboard, 
+    get_answer_keyboard_with_skip,
+    get_group_menu_reply_keyboard,
+    get_match_confirmation_keyboard # Import keyboard function (will create next)
+)
+from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates, GroupOnboarding, GroupFlow
+from src.core.openai_service import is_yes_no_question, check_duplicate_question, check_spelling
+from src.db import get_session
+from src.db.repositories import (
+    user_repo, question_repo, answer_repo, group_repo,
+    create_match, get_match_between_users, 
+    create_chat_session, get_by_session_id, get_by_match_id, update_status
+)
+from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match, GroupMember, Chat
+from src.bot.utils.matching import find_best_match
+from src.db.repositories.match_repo import get_match_between_users, create_match, find_matches, get_match
+from src.db.repositories.chat_session_repo import create_chat_session, get_by_match_id, update_status
+from src.db.repositories.chat_repo import get_chat_by_participants
+from src.core.diagnostics import get_diagnostics_report, IS_RAILWAY
+
+settings = get_settings() # Get settings from config
+
+# Constants
+FIND_MATCH_COST = 10  # Cost in points to find a match
+MIN_QUESTIONS_FOR_MATCH = 3  # Minimum number of answered questions needed to find a match
+
+# Define the mapping for answer values
+ANSWER_VALUES = {
+    "strong_no": -2,
+    "no": -1,
+    "skip": 0, # Special case for skip
+    "yes": 1,
+    "strong_yes": 2,
+}
+
+logger = logging.getLogger(__name__)
+
+async def get_answer_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of answers for a user in a group."""
+    # Get all answers from this user for questions in this group
+    query = (
+        select(func.count())
+        .select_from(Answer)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} answers in group {group_id}")
+    return count
+
+async def get_unanswered_question_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of unanswered questions for a user in a group."""
+    # Get all answers from this user for questions in this group
+    answered_subquery = (
+        select(Answer.question_id)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+        .subquery()
+    )
+    
+    # Count questions that are active, in the specified group,
+    # and not in the list of questions the user has already answered
+    query = (
+        select(func.count())
+        .select_from(Question)
+        .where(
+            Question.group_id == group_id,
+            Question.is_active == True,
+            ~Question.id.in_(select(answered_subquery.c.question_id))
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} unanswered questions in group {group_id}")
+    return count
+
+
+
+
+async def count_unanswered_questions(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Alias for get_unanswered_question_count for backward compatibility."""
+    return await get_unanswered_question_count(session, user_id, group_id)
+async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle /start command."""
+    import base64
+    
+    # EXTENSIVE DEBUG LOGGING
+    logger.info(f"========== START COMMAND TRIGGERED ==========")
+    logger.info(f"From user: {message.from_user.id} ({message.from_user.username or 'no username'})")
+    logger.info(f"Message text: {message.text}")
+    logger.info(f"Command object: {command}")
+    logger.info(f"State available: {state is not None}")
+    logger.info(f"Session available: {session is not None}")
+    logger.info(f"USE_WEBHOOK environment: {os.environ.get('USE_WEBHOOK', 'not set')}")
+    logger.info(f"Bot running in: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')} environment")
+    
+    try:
+        # Special handling for load_answered_questions
+        if callback.data == "load_answered_questions":
+            logger.info(f"Debug callback redirecting to on_load_answered_questions in load_answered_questions.py")
+            try:
+                await on_load_answered_questions(callback, state, session)
+                return
+            except Exception as e:
+                logger.error(f"Error in on_load_answered_questions: {e}", exc_info=True)
+                await callback.answer("Error loading your answers. Please try again.", show_alert=True)
+                return
+        
+
+        # Basic logging
+        logger.info(f"Start command triggered from user {message.from_user.id}")
+        
+        # Extract potential command args from the message text directly
+        args = None
+        if message.text and message.text.startswith("/start "):
+            args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+            logger.info(f"DEBUG: Extracted args from message text: {args}")
+        # Also check the command object if available
+        elif command and command.args:
+            args = command.args
+            logger.info(f"DEBUG: Args from command object: {args}")
+        
+        if args:
+            logger.info(f"Processing start command with args: {args}")
+            try:
+                # Add padding back if needed
+                padding_needed = len(args) % 4
+                if padding_needed:
+                    padded_args = args + '=' * (4 - padding_needed)
+                else:
+                    padded_args = args
+                
+                # Try to decode as base64
+                try:
+                    decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
+                    logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                    
+                    # Check if it's a group invite (g{id})
+                    if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
+                        group_id = int(decoded_payload[1:])
+                        logger.info(f"Base64 decoded invite for group {group_id}")
+                        await handle_group_invite(message, group_id, state, session)
+                        return
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 payload: {e}")
+                
+                # Fall back to older formats (for backward compatibility)
+                if args.startswith('join_') and args[5:].isdigit():
+                    group_id = int(args[5:])
+                    logger.info(f"Direct 'join_X' format invite for group {group_id}")
+                    await handle_group_invite(message, group_id, state, session)
+                    return
+            except Exception as e:
+                logger.error(f"Error processing start command args: {e}")
+                logger.exception("Full exception details:")
+        
+        user_tg = message.from_user
+        logger.info(f"User {user_tg.id} started the bot")
+        
+        # Ensure session is available (dependency injection handles this)
+        if not session:
+            logger.error("Database session not available in cmd_start")
+            await message.answer("Sorry, there was a problem connecting to the database. Please try again later.")
+            return
             
-        question = question_map[question_id]
-        
-        # Check if user can delete this question
-        can_delete = await can_delete_question(db_user.id, question, session)
-        
-        # User has answered this question
-        answer_display = "Unknown"
-        if answer.answer_type == "skip":
-            answer_display = "⏭️"
-        else:
-            emoji_map = {
-                "strong_no": "👎👎", 
-                "no": "👎", 
-                "yes": "👍", 
-                "strong_yes": "👍👍"
+        try:
+            # Get or create user in DB - Convert Telegram user to dict manually
+            user_dict = {
+                "id": user_tg.id,
+                "first_name": user_tg.first_name,
+                "last_name": user_tg.last_name,
+                "username": user_tg.username,
+                "is_bot": user_tg.is_bot
             }
-            answer_display = emoji_map.get(answer.answer_type, answer.answer_type)
+            
+            logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
+            db_user, created = await user_repo.get_or_create_user(session, user_dict)
+            if created:
+                logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+            else:
+                logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        except Exception as db_error:
+            logger.error(f"Database error while getting/creating user: {db_error}")
+            logger.exception("Database operation traceback:")
+            await message.answer("Sorry, there was a database error. Please try again later.")
+            return
+
+        try:
+            # Check if user belongs to any groups
+            logger.info(f"Checking if user {db_user.id} belongs to any groups")
+            user_groups = await group_repo.get_user_groups(session, db_user.id)
+            logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
+        except Exception as group_error:
+            logger.error(f"Error retrieving user groups: {group_error}")
+            logger.exception("Group retrieval traceback:")
+            await message.answer("Sorry, there was an error retrieving your groups. Please try again later.")
+            return
         
-        # Question text
-        question_text = question.text
-        
-        # Add action buttons
-        keyboard_buttons = []
-        # Answer button
-        keyboard_buttons.append(
+        # Create state if it doesn't exist
+        if not state:
+            logger.info("State not provided, creating a new one")
+            # This code was causing syntax errors and has been commented out
+            logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
+            
+            # REMOVE THIS PROBLEMATIC CODE:
+            # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+            # logger.info("Successfully created state context")
+            
+            # These lines were part of a try-except block causing syntax errors
+            # logger.error("Failed to create state context")
+            # logger.exception("State creation traceback:")
+            # Continue without state
+        # If user is already in groups, show the group menu
+        if user_groups:
+            # User is already in some group
+            # For now, consider that a user has just one group
+            group = user_groups[0]  # Take the first group
+            logger.info(f"User is in group {group.id}, showing group menu")
+            
+            logger.warning("State not provided, continuing without state")  # Fixed problematic try-except
+                # Verify the group still exists
+#                 if not await group_repo.get(session, group.id):
+#                     logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+#                     await message.answer("This group was deleted.")
+#                     await show_welcome_menu(message)
+#                     return
+#             
+                # Show the group menu
+#                 await show_group_menu(
+#                     message=message,
+#                     group_id=group.id,
+#                     group_name=group.name,
+#                     state=state,
+#                     session=session
+#                 )
+#             except Exception as group_menu_error:
+#                 logger.error(f"Error showing group menu: {group_menu_error}")
+#                 logger.exception("Group menu traceback:")
+#                 await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
+#                 return
+        else:
+            # User is not in any group yet
+            logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
+            try:
+                await show_welcome_menu(message)
+            except Exception as welcome_menu_error:
+                logger.error(f"Error showing welcome menu: {welcome_menu_error}")
+                logger.exception("Welcome menu traceback:")
+                await message.answer("Sorry, there was an error displaying the welcome menu. Please try again.")
+                return
+    except Exception as e:
+        logger.error(f"Unexpected error in cmd_start: {e}")
+        logger.exception("Full exception traceback:")
+        # Try to respond to user if possible
+        try:
+            await message.answer("Sorry, an unexpected error occurred. Please try again later.")
+        except Exception as reply_error:
+            logger.error(f"Failed to send error message to user: {reply_error}")
+    
+    logger.info("========== END OF START COMMAND ==========")
+
+
+async def display_single_question(message: types.Message, question, db_user, session: AsyncSession, state: FSMContext = None) -> None:
+    """Display a single question to the user."""
+    question_text = question.text
+    
+    # Check if the user can delete this question
+    can_delete = await can_delete_question(db_user.id, question, session)
+    
+    # Create keyboard with answer options
+    answer_buttons = [
+        types.InlineKeyboardButton(
+            text="👎👎",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👎",
+            callback_data=f"answer:{question.id}:{AnswerType.NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="⏭️",
+            callback_data=f"skip_question:{question.id}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍",
+            callback_data=f"answer:{question.id}:{AnswerType.YES.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍👍",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_YES.value}"
+        )
+    ]
+    
+    # Create a row for actions
+    action_buttons = []
+    
+    # Delete button (for authors or group creators)
+    if can_delete:
+        action_buttons.append(
             types.InlineKeyboardButton(
-                text=answer_display,
-                callback_data=f"answer:{question.id}:toggle"
+                text="🗑️ Delete",
+                callback_data=f"delete_question:{question.id}"
             )
         )
+    
+    # Create keyboard with answer options in first row and actions in second row
+    keyboard_rows = [answer_buttons]
+    if action_buttons:
+        keyboard_rows.append(action_buttons)
         
-        # Delete button (for authors or group creators)
-        if can_delete:
-            keyboard_buttons.append(
-                types.InlineKeyboardButton(
-                    text="🗑️ Delete",
-                    callback_data=f"delete_question:{question.id}"
-                )
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    try:
+        # Send the question and get the sent message object
+        sent_msg = await message.answer(question_text, reply_markup=keyboard)
+        logger.info(f"Successfully displayed question {question.id} for user {db_user.id}, message ID: {sent_msg.message_id}")
+        
+        # Store the message ID in state for future reference
+        if state:
+            await state.update_data(
+                last_question_message_id=sent_msg.message_id,
+                current_displayed_question_id=question.id
             )
         
-        # Create the keyboard with the appropriate buttons
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
-        
-        # Send directly and get the sent message object
-        await callback.message.answer(question_text, reply_markup=keyboard)
-        sent_count += 1
-        
-        # Add a delay to avoid flood control
-        if sent_count % 5 == 0:
-            await asyncio.sleep(0.5)
+        return sent_msg
+    except Exception as e:
+        logger.error(f"Error displaying question {question.id} to user {db_user.id}: {e}", exc_info=True)
+        return None
+
+
+async def cleanup_previous_questions(message: types.Message, state: FSMContext) -> None:
+    """Clean up previously displayed unanswered question messages from the chat."""
+    data = await state.get_data()
+    last_question_message_id = data.get("last_question_message_id")
+    last_answered_msg_id = data.get("last_answered_msg_id")  # We don't want to delete this
     
-    logger.info(f"Displayed {sent_count} answered questions for user {db_user.id}")
+    # Only delete if it exists and is not the most recently answered question
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete message {last_question_message_id}: {e}")
+
+
+async def check_and_display_next_question(message: types.Message, db_user, group_id: int, state: FSMContext, session: AsyncSession) -> bool:
+    """
+    Check if there are unanswered questions for the user and display the next one.
+    Returns True if a question was displayed, False otherwise.
+    """
+    try:
+        # Get user state data
+        data = await state.get_data()
+        last_displayed_question_id = data.get("last_displayed_question_id")
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        no_questions_shown = data.get("no_questions_shown", False)
+        session_id = data.get("session_id", f"{db_user.id}_{group_id}_{int(time.time())}")
+        
+        # Ensure we have a session ID for tracking purposes
+        if "session_id" not in data:
+            await state.update_data(session_id=session_id)
+            logger.info(f"Created new session ID {session_id} for user {db_user.id}")
+        
+        # Log the current session state for debugging
+        logger.info(f"Session {session_id}: User {db_user.id} in group {group_id}")
+        logger.info(f"Session {session_id}: Last displayed question: {last_displayed_question_id}")
+        logger.info(f"Session {session_id}: Recently shown questions: {recently_shown_questions}")
+        
+        # Ensure any pending changes are committed to avoid inconsistent state
+        try:
+            await session.commit()
+            await session.flush()  # Extra flush to ensure all pending changes are processed
+        except Exception as e:
+            logger.error(f"Error committing session in check_and_display_next_question: {e}")
+            
+        # Get user's current answers to make sure we have up-to-date data
+        # This is critical for PostgreSQL to avoid caching issues
+        try:
+            current_answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+            answered_ids = [a.question_id for a in current_answers]
+        except Exception as e:
+            logger.error(f"Error getting user answers in check_and_display_next_question: {e}")
+            answered_ids = []
+        
+        logger.info(f"Session {session_id}: User has answered {len(answered_ids)} questions in group {group_id}")
+        logger.info(f"Session {session_id}: Answered question IDs: {answered_ids}")
+        
+        # Get the total number of available questions for user in this group
+        try:
+            all_questions_query = select(Question).where(
+                Question.group_id == group_id,
+                Question.is_active == True
+            )
+            all_questions_result = await session.execute(all_questions_query)
+            all_questions = all_questions_result.scalars().all()
+            all_question_ids = [q.id for q in all_questions]
+            
+            total_questions = len(all_questions)
+            total_available = len([q for q in all_questions if q.id not in answered_ids])
+            
+            logger.info(f"Session {session_id}: Total active questions: {total_questions}")
+            logger.info(f"Session {session_id}: Total unanswered questions: {total_available}")
+            logger.info(f"Session {session_id}: All active question IDs: {all_question_ids}")
+        except Exception as e:
+            logger.error(f"Error getting all questions in check_and_display_next_question: {e}")
+            total_available = 1  # Assume there are questions to avoid resetting the recently shown list
+        
+        # If we've shown all questions or our list is getting too long, reset it
+        if (len(recently_shown_questions) >= total_available) or (len(recently_shown_questions) > 100):
+            recently_shown_questions = []
+            if last_displayed_question_id is not None:
+                recently_shown_questions = [last_displayed_question_id]  # Keep only the most recent one
+            logger.info(f"Session {session_id}: Reset recently shown questions list, new list: {recently_shown_questions}")
+        
+        # Add any already answered questions to our exclusion list to be super safe
+        exclusion_list = list(set(recently_shown_questions + answered_ids))
+        if last_displayed_question_id is not None and last_displayed_question_id not in exclusion_list:
+            exclusion_list.append(last_displayed_question_id)
+            
+        logger.info(f"Session {session_id}: Using exclusion list: {exclusion_list}")
+        
+        # Get the next unanswered question, excluding recently shown ones
+        try:
+            next_question = await question_repo.get_next_question_for_user(
+                session,
+                db_user.id,
+                group_id,
+                excluded_ids=exclusion_list
+            )
+        except Exception as e:
+            logger.error(f"Error in get_next_question_for_user: {e}", exc_info=True)
+            next_question = None
+        
+        # If no questions available when excluding recently shown ones,
+        # but there are unanswered questions, try again with minimal exclusions
+        if not next_question and total_available > 0:
+            logger.info(f"Session {session_id}: No new questions with current exclusions, trying with minimal exclusions")
+            # Only exclude questions we know for sure are answered
+            try:
+                next_question = await question_repo.get_next_question_for_user(
+                    session,
+                    db_user.id,
+                    group_id,
+                    excluded_ids=answered_ids
+                )
+            except Exception as e:
+                logger.error(f"Error in fallback get_next_question_for_user: {e}", exc_info=True)
+                next_question = None
+        
+        # Always prioritize new questions - they should be displayed immediately
+            # If we found a question, display it
+        if next_question:
+            # Double check it's not already answered (extreme caution)
+            if next_question.id in answered_ids:
+                logger.error(f"Session {session_id}: CRITICAL: Question {next_question.id} was already answered but was selected for display. Skipping it.")
+                # Try to recover by updating our state and returning False
+                await state.update_data(
+                    recently_shown_questions=exclusion_list + [next_question.id]
+                )
+                return False
+                
+            # Reset the "no questions shown" flag since we have a question to show
+            if no_questions_shown:
+                await state.update_data(no_questions_shown=False)
+                
+            # Clean up previous unanswered question messages to avoid having multiple unanswered questions
+            await cleanup_previous_questions(message, state)
+                
+            try:
+                await display_single_question(message, next_question, db_user, session, state)
+                logger.info(f"Session {session_id}: Successfully displayed question {next_question.id} for user {db_user.id}")
+            except Exception as e:
+                logger.error(f"Error displaying question {next_question.id}: {e}", exc_info=True)
+                await message.answer("An error occurred while displaying the question. Please try again.")
+                return False
+            
+            # Update recently shown questions
+            if next_question.id not in recently_shown_questions:
+                recently_shown_questions.append(next_question.id)
+            
+            # Update state with the question we just displayed and update recently shown
+            await state.update_data(
+                last_displayed_question_id=next_question.id,
+                recently_shown_questions=recently_shown_questions,
+                current_question_id=next_question.id  # Explicit tracking of current question
+            )
+            
+            return True
+        else:
+            # No more questions to answer
+            # Only show the message if we haven't shown it before
+            if not no_questions_shown:
+                try:
+                    no_questions_msg = await message.answer("No more questions from people at the moment")
+                    # Store the message ID so we can delete it later if needed
+                    await state.update_data(
+                        no_questions_msg_id=no_questions_msg.message_id,
+                        no_questions_shown=True
+                    )
+                    logger.info(f"Session {session_id}: No more questions available, displayed 'no questions' message")
+                except Exception as e:
+                    logger.error(f"Error sending 'no questions' message: {e}")
+            else:
+                logger.info(f"Session {session_id}: No more questions available, 'no questions' message already shown")
+            
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error in check_and_display_next_question for user {db_user.id}: {e}", exc_info=True)
+        try:
+            await message.answer("An error occurred while loading questions. Please try again.")
+        except Exception as send_error:
+            logger.error(f"Could not send error message: {send_error}")
+        return False
+
+
+async def can_delete_question(user_id: int, question, session: AsyncSession) -> bool:
+    """
+    Check if a user can delete a question.
+    Returns True if the user is either the author of the question or the creator of the group.
+    """
+    # Check if user is the author
+    if question.author_id == user_id:
+        return True
+        
+    # Check if user is the creator of the group
+    try:
+        is_group_creator = await group_repo.is_group_creator(session, user_id, question.group_id)
+        return is_group_creator
+    except Exception as e:
+        logger.error(f"Error checking if user {user_id} is group creator: {e}")
+        return False
+
+
+# Moved to load_answered_questions.py
+
+
+async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle when user is invited to a specific group."""
+    user = message.from_user
     
-    # Check for unanswered questions and show the first one if available
-    await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+    # Fetch group details from database
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in database")
+        await message.answer("Sorry, this group no longer exists.")
+        return
+        
+    group_name = group.name
+    
+    logger.info(f"User {user.id} received invite to group {group_id} ({group_name})")
+    
+    welcome_text = (
+        f"👋 Welcome to Allkinds, {user.first_name}!\n\n"
+        f"You've been invited to join <b>{group_name}</b>.\n\n"
+        "Would you like to join this Team?"
+    )
+    
+    # Create keyboard with join/cancel options
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Join Team", callback_data=f"join_group:{group_id}"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_join"),
+        ]
+    ])
+    
+    # Store group_id in state
+    if state:
+        await state.update_data(invited_group_id=group_id)
+    
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def show_welcome_menu(message: types.Message) -> None:
+    """Show the welcome menu for the bot."""
+    # Improved logging for debugging
+    logger.info(f"Showing welcome menu to user {message.from_user.id}")
+    
+    keyboard = get_start_menu_keyboard()
+    
+    # Log keyboard structure to confirm it's generated correctly
+    logger.info(f"Generated keyboard structure: {keyboard}")
+    
+    welcome_text = (
+        "👋 Welcome to <b>AllKinds</b>!\n\n"
+        "This bot helps you connect with people who share your values.\n\n"
+        "What would you like to do?"
+    )
+    
+    try:
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"Welcome menu sent successfully to user {message.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending welcome menu: {e}")
+
+
+async def on_create_team(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle create team button callback."""
+    await callback.answer()
+    
+    text = (
+        "Let's create a new Team! 🚀\n\n"
+        "Please enter a name for your Team:"
+    )
+    
+    # Set user state to waiting for team name
+    await state.set_state(TeamCreation.waiting_for_name)
+    
+    await callback.message.answer(text)
+
+
+async def on_join_team(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle join team button callback."""
+    logger.info(f"User {callback.from_user.id} clicked Join Team button")
+    await callback.answer()
+    
+    # Get current state data
+    data = await state.get_data()
+    current_group_id = data.get("current_group_id")
+    
+    # Log current state for debugging
+    logger.info(f"User {callback.from_user.id} current state data: group_id={current_group_id}, all data: {data}")
+    
+    # Clear current group info to allow joining a new group
+    if current_group_id:
+        logger.info(f"User {callback.from_user.id} is currently in group {current_group_id}, clearing for join flow")
+        await state.update_data(current_group_id=None, current_group_name=None)
+    
+    text = (
+        "To join a Team, you need an invitation link or code.\n\n"
+        "Please enter the invitation code or ask the Team creator for an invitation link."
+    )
+    
+    # Set user state to waiting for team code
+    await state.set_state(TeamJoining.waiting_for_code)
+    current_state = await state.get_state()
+    logger.info(f"Set user {callback.from_user.id} state to {current_state}")
+    
+    try:
+        msg = await callback.message.answer(text)
+        logger.info(f"Successfully sent join team prompt to user {callback.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending join team prompt: {e}")
+        await callback.message.answer("An error occurred. Please try again by clicking /start.")
+
+
+async def on_cancel_join(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancel join button callback."""
+    await callback.answer("Canceled joining the team")
+    
+    # Clear state and return to main menu
+    await state.clear()
+    await show_welcome_menu(callback.message)
+
+
+async def process_team_name(message: types.Message, state: FSMContext) -> None:
+    """Process team name input from user."""
+    team_name = message.text.strip()
+    
+    if len(team_name) < 3:
+        await message.answer("Team name is too short. Please use at least 3 characters.")
+        return
+    
+    if len(team_name) > 50:
+        await message.answer("Team name is too long. Please use at most 50 characters.")
+        return
+    
+    # Store the team name
+    await state.update_data(team_name=team_name)
+    
+    # Ask for team description
+    await message.answer(
+        "Great! Now please provide a short description for your Team (optional).\n\n"
+        "Or type /skip to skip this step."
+    )
+    
+    # Update state
+    await state.set_state(TeamCreation.waiting_for_description)
+
+
+async def process_team_description(message: types.Message, state: FSMContext) -> None:
+    """Process team description input from user."""
+    # Check for skip command - handle both as command and as text
+    if message.text.strip() == "/skip":
+        logger.info("User skipped team description")
+        description = ""
+    else:
+        description = message.text.strip()
+        logger.info(f"User provided team description: {description[:20]}...")
+    
+    # Store the description
+    await state.update_data(team_description=description)
+    
+    # Get the stored team name
+    data = await state.get_data()
+    team_name = data.get("team_name", "Unknown Team")
+    
+    # Ask for confirmation
+    confirmation_text = (
+        f"Please confirm your team details:\n\n"
+        f"Name: {team_name}\n"
+    )
+    
+    if description:
+        confirmation_text += f"Description: {description}\n\n"
+    else:
+        confirmation_text += "Description: None\n\n"
+    
+    confirmation_text += "Is this correct?"
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Confirm", callback_data="confirm_team"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_team"),
+        ]
+    ])
+    
+    logger.info(f"Showing confirmation for team: {team_name}")
+    await message.answer(confirmation_text, reply_markup=keyboard)
+    
+    # Update state
+    await state.set_state(TeamCreation.confirm_creation)
+    current_state_check = await state.get_state() # Add check
+    logger.info(f"State set to: {current_state_check} before showing confirmation.") # Add log
+
+
+"""
+start.py - Bot message and callback handlers - start
+
+Part of AllkindsTeamBot - A Telegram bot service that connects people based on shared values.
+
+This file contains message and callback handlers for bot interactions
+"""
+
+from aiogram import Dispatcher, F, types, Bot
+from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
+from aiogram.utils.deep_linking import create_start_link, decode_payload
+from loguru import logger
+import base64
+import asyncio
+import time
+from datetime import datetime
+import re
+import logging
+import os
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, delete, update, and_
+
+# from src.bot.config import bot_settings # No longer needed
+from src.core.config import get_settings # Import main settings
+from src.bot.keyboards.inline import (
+
+    # Get the user from the database
+
+    get_start_menu_keyboard, 
+    get_group_menu_keyboard, 
+    get_answer_keyboard_with_skip,
+    get_group_menu_reply_keyboard,
+    get_match_confirmation_keyboard # Import keyboard function (will create next)
+)
+from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates, GroupOnboarding, GroupFlow
+from src.core.openai_service import is_yes_no_question, check_duplicate_question, check_spelling
+from src.db import get_session
+from src.db.repositories import (
+    user_repo, question_repo, answer_repo, group_repo,
+    create_match, get_match_between_users, 
+    create_chat_session, get_by_session_id, get_by_match_id, update_status
+)
+from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match, GroupMember, Chat
+from src.bot.utils.matching import find_best_match
+from src.db.repositories.match_repo import get_match_between_users, create_match, find_matches, get_match
+from src.db.repositories.chat_session_repo import create_chat_session, get_by_match_id, update_status
+from src.db.repositories.chat_repo import get_chat_by_participants
+from src.core.diagnostics import get_diagnostics_report, IS_RAILWAY
+
+settings = get_settings() # Get settings from config
+
+# Constants
+FIND_MATCH_COST = 10  # Cost in points to find a match
+MIN_QUESTIONS_FOR_MATCH = 3  # Minimum number of answered questions needed to find a match
+
+# Define the mapping for answer values
+ANSWER_VALUES = {
+    "strong_no": -2,
+    "no": -1,
+    "skip": 0, # Special case for skip
+    "yes": 1,
+    "strong_yes": 2,
+}
+
+logger = logging.getLogger(__name__)
+
+async def get_answer_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of answers for a user in a group."""
+    # Get all answers from this user for questions in this group
+    query = (
+        select(func.count())
+        .select_from(Answer)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} answers in group {group_id}")
+    return count
+
+async def get_unanswered_question_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of unanswered questions for a user in a group."""
+    # Get all answers from this user for questions in this group
+    answered_subquery = (
+        select(Answer.question_id)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+        .subquery()
+    )
+    
+    # Count questions that are active, in the specified group,
+    # and not in the list of questions the user has already answered
+    query = (
+        select(func.count())
+        .select_from(Question)
+        .where(
+            Question.group_id == group_id,
+            Question.is_active == True,
+            ~Question.id.in_(select(answered_subquery.c.question_id))
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} unanswered questions in group {group_id}")
+    return count
+
+
+
+
+async def count_unanswered_questions(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Alias for get_unanswered_question_count for backward compatibility."""
+    return await get_unanswered_question_count(session, user_id, group_id)
+async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle /start command."""
+    import base64
+    
+    # EXTENSIVE DEBUG LOGGING
+    logger.info(f"========== START COMMAND TRIGGERED ==========")
+    logger.info(f"From user: {message.from_user.id} ({message.from_user.username or 'no username'})")
+    logger.info(f"Message text: {message.text}")
+    logger.info(f"Command object: {command}")
+    logger.info(f"State available: {state is not None}")
+    logger.info(f"Session available: {session is not None}")
+    logger.info(f"USE_WEBHOOK environment: {os.environ.get('USE_WEBHOOK', 'not set')}")
+    logger.info(f"Bot running in: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')} environment")
+    
+    try:
+        # Special handling for load_answered_questions
+        if callback.data == "load_answered_questions":
+            logger.info(f"Debug callback redirecting to on_load_answered_questions in load_answered_questions.py")
+            try:
+                await on_load_answered_questions(callback, state, session)
+                return
+            except Exception as e:
+                logger.error(f"Error in on_load_answered_questions: {e}", exc_info=True)
+                await callback.answer("Error loading your answers. Please try again.", show_alert=True)
+                return
+        
+
+        # Basic logging
+        logger.info(f"Start command triggered from user {message.from_user.id}")
+        
+        # Extract potential command args from the message text directly
+        args = None
+        if message.text and message.text.startswith("/start "):
+            args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+            logger.info(f"DEBUG: Extracted args from message text: {args}")
+        # Also check the command object if available
+        elif command and command.args:
+            args = command.args
+            logger.info(f"DEBUG: Args from command object: {args}")
+        
+        if args:
+            logger.info(f"Processing start command with args: {args}")
+            try:
+                # Add padding back if needed
+                padding_needed = len(args) % 4
+                if padding_needed:
+                    padded_args = args + '=' * (4 - padding_needed)
+                else:
+                    padded_args = args
+                
+                # Try to decode as base64
+                try:
+                    decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
+                    logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                    
+                    # Check if it's a group invite (g{id})
+                    if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
+                        group_id = int(decoded_payload[1:])
+                        logger.info(f"Base64 decoded invite for group {group_id}")
+                        await handle_group_invite(message, group_id, state, session)
+                        return
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 payload: {e}")
+                
+                # Fall back to older formats (for backward compatibility)
+                if args.startswith('join_') and args[5:].isdigit():
+                    group_id = int(args[5:])
+                    logger.info(f"Direct 'join_X' format invite for group {group_id}")
+                    await handle_group_invite(message, group_id, state, session)
+                    return
+            except Exception as e:
+                logger.error(f"Error processing start command args: {e}")
+                logger.exception("Full exception details:")
+        
+        user_tg = message.from_user
+        logger.info(f"User {user_tg.id} started the bot")
+        
+        # Ensure session is available (dependency injection handles this)
+        if not session:
+            logger.error("Database session not available in cmd_start")
+            await message.answer("Sorry, there was a problem connecting to the database. Please try again later.")
+            return
+            
+        try:
+            # Get or create user in DB - Convert Telegram user to dict manually
+            user_dict = {
+                "id": user_tg.id,
+                "first_name": user_tg.first_name,
+                "last_name": user_tg.last_name,
+                "username": user_tg.username,
+                "is_bot": user_tg.is_bot
+            }
+            
+            logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
+            db_user, created = await user_repo.get_or_create_user(session, user_dict)
+            if created:
+                logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+            else:
+                logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        except Exception as db_error:
+            logger.error(f"Database error while getting/creating user: {db_error}")
+            logger.exception("Database operation traceback:")
+            await message.answer("Sorry, there was a database error. Please try again later.")
+            return
+
+        try:
+            # Check if user belongs to any groups
+            logger.info(f"Checking if user {db_user.id} belongs to any groups")
+            user_groups = await group_repo.get_user_groups(session, db_user.id)
+            logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
+        except Exception as group_error:
+            logger.error(f"Error retrieving user groups: {group_error}")
+            logger.exception("Group retrieval traceback:")
+            await message.answer("Sorry, there was an error retrieving your groups. Please try again later.")
+            return
+        
+        # Create state if it doesn't exist
+        if not state:
+            logger.info("State not provided, creating a new one")
+            # This code was causing syntax errors and has been commented out
+            logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
+            
+            # REMOVE THIS PROBLEMATIC CODE:
+            # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+            # logger.info("Successfully created state context")
+            
+            # These lines were part of a try-except block causing syntax errors
+            # logger.error("Failed to create state context")
+            # logger.exception("State creation traceback:")
+            # Continue without state
+        # If user is already in groups, show the group menu
+        if user_groups:
+            # User is already in some group
+            # For now, consider that a user has just one group
+            group = user_groups[0]  # Take the first group
+            logger.info(f"User is in group {group.id}, showing group menu")
+            
+            logger.warning("State not provided, continuing without state")  # Fixed problematic try-except
+                # Verify the group still exists
+#                 if not await group_repo.get(session, group.id):
+#                     logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+#                     await message.answer("This group was deleted.")
+#                     await show_welcome_menu(message)
+#                     return
+#             
+                # Show the group menu
+#                 await show_group_menu(
+#                     message=message,
+#                     group_id=group.id,
+#                     group_name=group.name,
+#                     state=state,
+#                     session=session
+#                 )
+#             except Exception as group_menu_error:
+#                 logger.error(f"Error showing group menu: {group_menu_error}")
+#                 logger.exception("Group menu traceback:")
+#                 await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
+#                 return
+        else:
+            # User is not in any group yet
+            logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
+            try:
+                await show_welcome_menu(message)
+            except Exception as welcome_menu_error:
+                logger.error(f"Error showing welcome menu: {welcome_menu_error}")
+                logger.exception("Welcome menu traceback:")
+                await message.answer("Sorry, there was an error displaying the welcome menu. Please try again.")
+                return
+    except Exception as e:
+        logger.error(f"Unexpected error in cmd_start: {e}")
+        logger.exception("Full exception traceback:")
+        # Try to respond to user if possible
+        try:
+            await message.answer("Sorry, an unexpected error occurred. Please try again later.")
+        except Exception as reply_error:
+            logger.error(f"Failed to send error message to user: {reply_error}")
+    
+    logger.info("========== END OF START COMMAND ==========")
+
+
+async def display_single_question(message: types.Message, question, db_user, session: AsyncSession, state: FSMContext = None) -> None:
+    """Display a single question to the user."""
+    question_text = question.text
+    
+    # Check if the user can delete this question
+    can_delete = await can_delete_question(db_user.id, question, session)
+    
+    # Create keyboard with answer options
+    answer_buttons = [
+        types.InlineKeyboardButton(
+            text="👎👎",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👎",
+            callback_data=f"answer:{question.id}:{AnswerType.NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="⏭️",
+            callback_data=f"skip_question:{question.id}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍",
+            callback_data=f"answer:{question.id}:{AnswerType.YES.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍👍",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_YES.value}"
+        )
+    ]
+    
+    # Create a row for actions
+    action_buttons = []
+    
+    # Delete button (for authors or group creators)
+    if can_delete:
+        action_buttons.append(
+            types.InlineKeyboardButton(
+                text="🗑️ Delete",
+                callback_data=f"delete_question:{question.id}"
+            )
+        )
+    
+    # Create keyboard with answer options in first row and actions in second row
+    keyboard_rows = [answer_buttons]
+    if action_buttons:
+        keyboard_rows.append(action_buttons)
+        
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    try:
+        # Send the question and get the sent message object
+        sent_msg = await message.answer(question_text, reply_markup=keyboard)
+        logger.info(f"Successfully displayed question {question.id} for user {db_user.id}, message ID: {sent_msg.message_id}")
+        
+        # Store the message ID in state for future reference
+        if state:
+            await state.update_data(
+                last_question_message_id=sent_msg.message_id,
+                current_displayed_question_id=question.id
+            )
+        
+        return sent_msg
+    except Exception as e:
+        logger.error(f"Error displaying question {question.id} to user {db_user.id}: {e}", exc_info=True)
+        return None
+
+
+async def cleanup_previous_questions(message: types.Message, state: FSMContext) -> None:
+    """Clean up previously displayed unanswered question messages from the chat."""
+    data = await state.get_data()
+    last_question_message_id = data.get("last_question_message_id")
+    last_answered_msg_id = data.get("last_answered_msg_id")  # We don't want to delete this
+    
+    # Only delete if it exists and is not the most recently answered question
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete message {last_question_message_id}: {e}")
+
+
+async def check_and_display_next_question(message: types.Message, db_user, group_id: int, state: FSMContext, session: AsyncSession) -> bool:
+    """
+    Check if there are unanswered questions for the user and display the next one.
+    Returns True if a question was displayed, False otherwise.
+    """
+    try:
+        # Get user state data
+        data = await state.get_data()
+        last_displayed_question_id = data.get("last_displayed_question_id")
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        no_questions_shown = data.get("no_questions_shown", False)
+        session_id = data.get("session_id", f"{db_user.id}_{group_id}_{int(time.time())}")
+        
+        # Ensure we have a session ID for tracking purposes
+        if "session_id" not in data:
+            await state.update_data(session_id=session_id)
+            logger.info(f"Created new session ID {session_id} for user {db_user.id}")
+        
+        # Log the current session state for debugging
+        logger.info(f"Session {session_id}: User {db_user.id} in group {group_id}")
+        logger.info(f"Session {session_id}: Last displayed question: {last_displayed_question_id}")
+        logger.info(f"Session {session_id}: Recently shown questions: {recently_shown_questions}")
+        
+        # Ensure any pending changes are committed to avoid inconsistent state
+        try:
+            await session.commit()
+            await session.flush()  # Extra flush to ensure all pending changes are processed
+        except Exception as e:
+            logger.error(f"Error committing session in check_and_display_next_question: {e}")
+            
+        # Get user's current answers to make sure we have up-to-date data
+        # This is critical for PostgreSQL to avoid caching issues
+        try:
+            current_answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+            answered_ids = [a.question_id for a in current_answers]
+        except Exception as e:
+            logger.error(f"Error getting user answers in check_and_display_next_question: {e}")
+            answered_ids = []
+        
+        logger.info(f"Session {session_id}: User has answered {len(answered_ids)} questions in group {group_id}")
+        logger.info(f"Session {session_id}: Answered question IDs: {answered_ids}")
+        
+        # Get the total number of available questions for user in this group
+        try:
+            all_questions_query = select(Question).where(
+                Question.group_id == group_id,
+                Question.is_active == True
+            )
+            all_questions_result = await session.execute(all_questions_query)
+            all_questions = all_questions_result.scalars().all()
+            all_question_ids = [q.id for q in all_questions]
+            
+            total_questions = len(all_questions)
+            total_available = len([q for q in all_questions if q.id not in answered_ids])
+            
+            logger.info(f"Session {session_id}: Total active questions: {total_questions}")
+            logger.info(f"Session {session_id}: Total unanswered questions: {total_available}")
+            logger.info(f"Session {session_id}: All active question IDs: {all_question_ids}")
+        except Exception as e:
+            logger.error(f"Error getting all questions in check_and_display_next_question: {e}")
+            total_available = 1  # Assume there are questions to avoid resetting the recently shown list
+        
+        # If we've shown all questions or our list is getting too long, reset it
+        if (len(recently_shown_questions) >= total_available) or (len(recently_shown_questions) > 100):
+            recently_shown_questions = []
+            if last_displayed_question_id is not None:
+                recently_shown_questions = [last_displayed_question_id]  # Keep only the most recent one
+            logger.info(f"Session {session_id}: Reset recently shown questions list, new list: {recently_shown_questions}")
+        
+        # Add any already answered questions to our exclusion list to be super safe
+        exclusion_list = list(set(recently_shown_questions + answered_ids))
+        if last_displayed_question_id is not None and last_displayed_question_id not in exclusion_list:
+            exclusion_list.append(last_displayed_question_id)
+            
+        logger.info(f"Session {session_id}: Using exclusion list: {exclusion_list}")
+        
+        # Get the next unanswered question, excluding recently shown ones
+        try:
+            next_question = await question_repo.get_next_question_for_user(
+                session,
+                db_user.id,
+                group_id,
+                excluded_ids=exclusion_list
+            )
+        except Exception as e:
+            logger.error(f"Error in get_next_question_for_user: {e}", exc_info=True)
+            next_question = None
+        
+        # If no questions available when excluding recently shown ones,
+        # but there are unanswered questions, try again with minimal exclusions
+        if not next_question and total_available > 0:
+            logger.info(f"Session {session_id}: No new questions with current exclusions, trying with minimal exclusions")
+            # Only exclude questions we know for sure are answered
+            try:
+                next_question = await question_repo.get_next_question_for_user(
+                    session,
+                    db_user.id,
+                    group_id,
+                    excluded_ids=answered_ids
+                )
+            except Exception as e:
+                logger.error(f"Error in fallback get_next_question_for_user: {e}", exc_info=True)
+                next_question = None
+        
+        # Always prioritize new questions - they should be displayed immediately
+            # If we found a question, display it
+        if next_question:
+            # Double check it's not already answered (extreme caution)
+            if next_question.id in answered_ids:
+                logger.error(f"Session {session_id}: CRITICAL: Question {next_question.id} was already answered but was selected for display. Skipping it.")
+                # Try to recover by updating our state and returning False
+                await state.update_data(
+                    recently_shown_questions=exclusion_list + [next_question.id]
+                )
+                return False
+                
+            # Reset the "no questions shown" flag since we have a question to show
+            if no_questions_shown:
+                await state.update_data(no_questions_shown=False)
+                
+            # Clean up previous unanswered question messages to avoid having multiple unanswered questions
+            await cleanup_previous_questions(message, state)
+                
+            try:
+                await display_single_question(message, next_question, db_user, session, state)
+                logger.info(f"Session {session_id}: Successfully displayed question {next_question.id} for user {db_user.id}")
+            except Exception as e:
+                logger.error(f"Error displaying question {next_question.id}: {e}", exc_info=True)
+                await message.answer("An error occurred while displaying the question. Please try again.")
+                return False
+            
+            # Update recently shown questions
+            if next_question.id not in recently_shown_questions:
+                recently_shown_questions.append(next_question.id)
+            
+            # Update state with the question we just displayed and update recently shown
+            await state.update_data(
+                last_displayed_question_id=next_question.id,
+                recently_shown_questions=recently_shown_questions,
+                current_question_id=next_question.id  # Explicit tracking of current question
+            )
+            
+            return True
+        else:
+            # No more questions to answer
+            # Only show the message if we haven't shown it before
+            if not no_questions_shown:
+                try:
+                    no_questions_msg = await message.answer("No more questions from people at the moment")
+                    # Store the message ID so we can delete it later if needed
+                    await state.update_data(
+                        no_questions_msg_id=no_questions_msg.message_id,
+                        no_questions_shown=True
+                    )
+                    logger.info(f"Session {session_id}: No more questions available, displayed 'no questions' message")
+                except Exception as e:
+                    logger.error(f"Error sending 'no questions' message: {e}")
+            else:
+                logger.info(f"Session {session_id}: No more questions available, 'no questions' message already shown")
+            
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error in check_and_display_next_question for user {db_user.id}: {e}", exc_info=True)
+        try:
+            await message.answer("An error occurred while loading questions. Please try again.")
+        except Exception as send_error:
+            logger.error(f"Could not send error message: {send_error}")
+        return False
+
+
+async def can_delete_question(user_id: int, question, session: AsyncSession) -> bool:
+    """
+    Check if a user can delete a question.
+    Returns True if the user is either the author of the question or the creator of the group.
+    """
+    # Check if user is the author
+    if question.author_id == user_id:
+        return True
+        
+    # Check if user is the creator of the group
+    try:
+        is_group_creator = await group_repo.is_group_creator(session, user_id, question.group_id)
+        return is_group_creator
+    except Exception as e:
+        logger.error(f"Error checking if user {user_id} is group creator: {e}")
+        return False
+
+
+# Moved to load_answered_questions.py
+
+
+async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle when user is invited to a specific group."""
+    user = message.from_user
+    
+    # Fetch group details from database
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in database")
+        await message.answer("Sorry, this group no longer exists.")
+        return
+        
+    group_name = group.name
+    
+    logger.info(f"User {user.id} received invite to group {group_id} ({group_name})")
+    
+    welcome_text = (
+        f"👋 Welcome to Allkinds, {user.first_name}!\n\n"
+        f"You've been invited to join <b>{group_name}</b>.\n\n"
+        "Would you like to join this Team?"
+    )
+    
+    # Create keyboard with join/cancel options
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Join Team", callback_data=f"join_group:{group_id}"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_join"),
+        ]
+    ])
+    
+    # Store group_id in state
+    if state:
+        await state.update_data(invited_group_id=group_id)
+    
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def show_welcome_menu(message: types.Message) -> None:
+    """Show the welcome menu for the bot."""
+    # Improved logging for debugging
+    logger.info(f"Showing welcome menu to user {message.from_user.id}")
+    
+    keyboard = get_start_menu_keyboard()
+    
+    # Log keyboard structure to confirm it's generated correctly
+    logger.info(f"Generated keyboard structure: {keyboard}")
+    
+    welcome_text = (
+        "👋 Welcome to <b>AllKinds</b>!\n\n"
+        "This bot helps you connect with people who share your values.\n\n"
+        "What would you like to do?"
+    )
+    
+    try:
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"Welcome menu sent successfully to user {message.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending welcome menu: {e}")
+
+
+async def on_create_team(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle create team button callback."""
+    await callback.answer()
+    
+    text = (
+        "Let's create a new Team! 🚀\n\n"
+        "Please enter a name for your Team:"
+    )
+    
+    # Set user state to waiting for team name
+    await state.set_state(TeamCreation.waiting_for_name)
+    
+    await callback.message.answer(text)
+
+
+async def on_join_team(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle join team button callback."""
+    logger.info(f"User {callback.from_user.id} clicked Join Team button")
+    await callback.answer()
+    
+    # Get current state data
+    data = await state.get_data()
+    current_group_id = data.get("current_group_id")
+    
+    # Log current state for debugging
+    logger.info(f"User {callback.from_user.id} current state data: group_id={current_group_id}, all data: {data}")
+    
+    # Clear current group info to allow joining a new group
+    if current_group_id:
+        logger.info(f"User {callback.from_user.id} is currently in group {current_group_id}, clearing for join flow")
+        await state.update_data(current_group_id=None, current_group_name=None)
+    
+    text = (
+        "To join a Team, you need an invitation link or code.\n\n"
+        "Please enter the invitation code or ask the Team creator for an invitation link."
+    )
+    
+    # Set user state to waiting for team code
+    await state.set_state(TeamJoining.waiting_for_code)
+    current_state = await state.get_state()
+    logger.info(f"Set user {callback.from_user.id} state to {current_state}")
+    
+    try:
+        msg = await callback.message.answer(text)
+        logger.info(f"Successfully sent join team prompt to user {callback.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending join team prompt: {e}")
+        await callback.message.answer("An error occurred. Please try again by clicking /start.")
+
+
+async def on_cancel_join(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancel join button callback."""
+    await callback.answer("Canceled joining the team")
+    
+    # Clear state and return to main menu
+    await state.clear()
+    await show_welcome_menu(callback.message)
+
+
+async def process_team_name(message: types.Message, state: FSMContext) -> None:
+    """Process team name input from user."""
+    team_name = message.text.strip()
+    
+    if len(team_name) < 3:
+        await message.answer("Team name is too short. Please use at least 3 characters.")
+        return
+    
+    if len(team_name) > 50:
+        await message.answer("Team name is too long. Please use at most 50 characters.")
+        return
+    
+    # Store the team name
+    await state.update_data(team_name=team_name)
+    
+    # Ask for team description
+    await message.answer(
+        "Great! Now please provide a short description for your Team (optional).\n\n"
+        "Or type /skip to skip this step."
+    )
+    
+    # Update state
+    await state.set_state(TeamCreation.waiting_for_description)
+
+
+async def process_team_description(message: types.Message, state: FSMContext) -> None:
+    """Process team description input from user."""
+    # Check for skip command - handle both as command and as text
+    if message.text.strip() == "/skip":
+        logger.info("User skipped team description")
+        description = ""
+    else:
+        description = message.text.strip()
+        logger.info(f"User provided team description: {description[:20]}...")
+    
+    # Store the description
+    await state.update_data(team_description=description)
+    
+    # Get the stored team name
+    data = await state.get_data()
+    team_name = data.get("team_name", "Unknown Team")
+    
+    # Ask for confirmation
+    confirmation_text = (
+        f"Please confirm your team details:\n\n"
+        f"Name: {team_name}\n"
+    )
+    
+    if description:
+        confirmation_text += f"Description: {description}\n\n"
+    else:
+        confirmation_text += "Description: None\n\n"
+    
+    confirmation_text += "Is this correct?"
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Confirm", callback_data="confirm_team"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_team"),
+        ]
+    ])
+    
+    logger.info(f"Showing confirmation for team: {team_name}")
+    await message.answer(confirmation_text, reply_markup=keyboard)
+    
+    # Update state
+    await state.set_state(TeamCreation.confirm_creation)
+    current_state_check = await state.get_state() # Add check
+    logger.info(f"State set to: {current_state_check} before showing confirmation.") # Add log
+"""
+start.py - Bot message and callback handlers - start
+
+Part of AllkindsTeamBot - A Telegram bot service that connects people based on shared values.
+
+This file contains message and callback handlers for bot interactions
+"""
+
+from aiogram import Dispatcher, F, types, Bot
+from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
+from aiogram.utils.deep_linking import create_start_link, decode_payload
+from loguru import logger
+import base64
+import asyncio
+import time
+from datetime import datetime
+import re
+import logging
+import os
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, delete, update, and_
+
+# from src.bot.config import bot_settings # No longer needed
+from src.core.config import get_settings # Import main settings
+from src.bot.keyboards.inline import (
+
+    # Get the user from the database
+
+    get_start_menu_keyboard, 
+    get_group_menu_keyboard, 
+    get_answer_keyboard_with_skip,
+    get_group_menu_reply_keyboard,
+    get_match_confirmation_keyboard # Import keyboard function (will create next)
+)
+from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates, GroupOnboarding, GroupFlow
+from src.core.openai_service import is_yes_no_question, check_duplicate_question, check_spelling
+from src.db import get_session
+from src.db.repositories import (
+    user_repo, question_repo, answer_repo, group_repo,
+    create_match, get_match_between_users, 
+    create_chat_session, get_by_session_id, get_by_match_id, update_status
+)
+from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match, GroupMember, Chat
+from src.bot.utils.matching import find_best_match
+from src.db.repositories.match_repo import get_match_between_users, create_match, find_matches, get_match
+from src.db.repositories.chat_session_repo import create_chat_session, get_by_match_id, update_status
+from src.db.repositories.chat_repo import get_chat_by_participants
+from src.core.diagnostics import get_diagnostics_report, IS_RAILWAY
+
+settings = get_settings() # Get settings from config
+
+# Constants
+FIND_MATCH_COST = 10  # Cost in points to find a match
+MIN_QUESTIONS_FOR_MATCH = 3  # Minimum number of answered questions needed to find a match
+
+# Define the mapping for answer values
+ANSWER_VALUES = {
+    "strong_no": -2,
+    "no": -1,
+    "skip": 0, # Special case for skip
+    "yes": 1,
+    "strong_yes": 2,
+}
+
+logger = logging.getLogger(__name__)
+
+async def get_answer_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of answers for a user in a group."""
+    # Get all answers from this user for questions in this group
+    query = (
+        select(func.count())
+        .select_from(Answer)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} answers in group {group_id}")
+    return count
+
+async def get_unanswered_question_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of unanswered questions for a user in a group."""
+    # Get all answers from this user for questions in this group
+    answered_subquery = (
+        select(Answer.question_id)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+        .subquery()
+    )
+    
+    # Count questions that are active, in the specified group,
+    # and not in the list of questions the user has already answered
+    query = (
+        select(func.count())
+        .select_from(Question)
+        .where(
+            Question.group_id == group_id,
+            Question.is_active == True,
+            ~Question.id.in_(select(answered_subquery.c.question_id))
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} unanswered questions in group {group_id}")
+    return count
+
+
+
+
+async def count_unanswered_questions(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Alias for get_unanswered_question_count for backward compatibility."""
+    return await get_unanswered_question_count(session, user_id, group_id)
+async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle /start command."""
+    import base64
+    
+    # EXTENSIVE DEBUG LOGGING
+    logger.info(f"========== START COMMAND TRIGGERED ==========")
+    logger.info(f"From user: {message.from_user.id} ({message.from_user.username or 'no username'})")
+    logger.info(f"Message text: {message.text}")
+    logger.info(f"Command object: {command}")
+    logger.info(f"State available: {state is not None}")
+    logger.info(f"Session available: {session is not None}")
+    logger.info(f"USE_WEBHOOK environment: {os.environ.get('USE_WEBHOOK', 'not set')}")
+    logger.info(f"Bot running in: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')} environment")
+    
+    try:
+        # Special handling for load_answered_questions
+        if callback.data == "load_answered_questions":
+            logger.info(f"Debug callback redirecting to on_load_answered_questions in load_answered_questions.py")
+            try:
+                await on_load_answered_questions(callback, state, session)
+                return
+            except Exception as e:
+                logger.error(f"Error in on_load_answered_questions: {e}", exc_info=True)
+                await callback.answer("Error loading your answers. Please try again.", show_alert=True)
+                return
+        
+
+        # Basic logging
+        logger.info(f"Start command triggered from user {message.from_user.id}")
+        
+        # Extract potential command args from the message text directly
+        args = None
+        if message.text and message.text.startswith("/start "):
+            args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+            logger.info(f"DEBUG: Extracted args from message text: {args}")
+        # Also check the command object if available
+        elif command and command.args:
+            args = command.args
+            logger.info(f"DEBUG: Args from command object: {args}")
+        
+        if args:
+            logger.info(f"Processing start command with args: {args}")
+            try:
+                # Add padding back if needed
+                padding_needed = len(args) % 4
+                if padding_needed:
+                    padded_args = args + '=' * (4 - padding_needed)
+                else:
+                    padded_args = args
+                
+                # Try to decode as base64
+                try:
+                    decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
+                    logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                    
+                    # Check if it's a group invite (g{id})
+                    if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
+                        group_id = int(decoded_payload[1:])
+                        logger.info(f"Base64 decoded invite for group {group_id}")
+                        await handle_group_invite(message, group_id, state, session)
+                        return
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 payload: {e}")
+                
+                # Fall back to older formats (for backward compatibility)
+                if args.startswith('join_') and args[5:].isdigit():
+                    group_id = int(args[5:])
+                    logger.info(f"Direct 'join_X' format invite for group {group_id}")
+                    await handle_group_invite(message, group_id, state, session)
+                    return
+            except Exception as e:
+                logger.error(f"Error processing start command args: {e}")
+                logger.exception("Full exception details:")
+        
+        user_tg = message.from_user
+        logger.info(f"User {user_tg.id} started the bot")
+        
+        # Ensure session is available (dependency injection handles this)
+        if not session:
+            logger.error("Database session not available in cmd_start")
+            await message.answer("Sorry, there was a problem connecting to the database. Please try again later.")
+            return
+            
+        try:
+            # Get or create user in DB - Convert Telegram user to dict manually
+            user_dict = {
+                "id": user_tg.id,
+                "first_name": user_tg.first_name,
+                "last_name": user_tg.last_name,
+                "username": user_tg.username,
+                "is_bot": user_tg.is_bot
+            }
+            
+            logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
+            db_user, created = await user_repo.get_or_create_user(session, user_dict)
+            if created:
+                logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+            else:
+                logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        except Exception as db_error:
+            logger.error(f"Database error while getting/creating user: {db_error}")
+            logger.exception("Database operation traceback:")
+            await message.answer("Sorry, there was a database error. Please try again later.")
+            return
+
+        try:
+            # Check if user belongs to any groups
+            logger.info(f"Checking if user {db_user.id} belongs to any groups")
+            user_groups = await group_repo.get_user_groups(session, db_user.id)
+            logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
+        except Exception as group_error:
+            logger.error(f"Error retrieving user groups: {group_error}")
+            logger.exception("Group retrieval traceback:")
+            await message.answer("Sorry, there was an error retrieving your groups. Please try again later.")
+            return
+        
+        # Create state if it doesn't exist
+        if not state:
+            logger.info("State not provided, creating a new one")
+            # This code was causing syntax errors and has been commented out
+            logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
+            
+            # REMOVE THIS PROBLEMATIC CODE:
+            # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+            # logger.info("Successfully created state context")
+            
+            # These lines were part of a try-except block causing syntax errors
+            # logger.error("Failed to create state context")
+            # logger.exception("State creation traceback:")
+            # Continue without state
+        # If user is already in groups, show the group menu
+        if user_groups:
+            # User is already in some group
+            # For now, consider that a user has just one group
+            group = user_groups[0]  # Take the first group
+            logger.info(f"User is in group {group.id}, showing group menu")
+            
+            logger.warning("State not provided, continuing without state")  # Fixed problematic try-except
+                # Verify the group still exists
+#                 if not await group_repo.get(session, group.id):
+#                     logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+#                     await message.answer("This group was deleted.")
+#                     await show_welcome_menu(message)
+#                     return
+#             
+                # Show the group menu
+#                 await show_group_menu(
+#                     message=message,
+#                     group_id=group.id,
+#                     group_name=group.name,
+#                     state=state,
+#                     session=session
+#                 )
+#             except Exception as group_menu_error:
+#                 logger.error(f"Error showing group menu: {group_menu_error}")
+#                 logger.exception("Group menu traceback:")
+#                 await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
+#                 return
+        else:
+            # User is not in any group yet
+            logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
+            try:
+                await show_welcome_menu(message)
+            except Exception as welcome_menu_error:
+                logger.error(f"Error showing welcome menu: {welcome_menu_error}")
+                logger.exception("Welcome menu traceback:")
+                await message.answer("Sorry, there was an error displaying the welcome menu. Please try again.")
+                return
+    except Exception as e:
+        logger.error(f"Unexpected error in cmd_start: {e}")
+        logger.exception("Full exception traceback:")
+        # Try to respond to user if possible
+        try:
+            await message.answer("Sorry, an unexpected error occurred. Please try again later.")
+        except Exception as reply_error:
+            logger.error(f"Failed to send error message to user: {reply_error}")
+    
+    logger.info("========== END OF START COMMAND ==========")
+
+
+async def display_single_question(message: types.Message, question, db_user, session: AsyncSession, state: FSMContext = None) -> None:
+    """Display a single question to the user."""
+    question_text = question.text
+    
+    # Check if the user can delete this question
+    can_delete = await can_delete_question(db_user.id, question, session)
+    
+    # Create keyboard with answer options
+    answer_buttons = [
+        types.InlineKeyboardButton(
+            text="👎👎",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👎",
+            callback_data=f"answer:{question.id}:{AnswerType.NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="⏭️",
+            callback_data=f"skip_question:{question.id}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍",
+            callback_data=f"answer:{question.id}:{AnswerType.YES.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍👍",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_YES.value}"
+        )
+    ]
+    
+    # Create a row for actions
+    action_buttons = []
+    
+    # Delete button (for authors or group creators)
+    if can_delete:
+        action_buttons.append(
+            types.InlineKeyboardButton(
+                text="🗑️ Delete",
+                callback_data=f"delete_question:{question.id}"
+            )
+        )
+    
+    # Create keyboard with answer options in first row and actions in second row
+    keyboard_rows = [answer_buttons]
+    if action_buttons:
+        keyboard_rows.append(action_buttons)
+        
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    try:
+        # Send the question and get the sent message object
+        sent_msg = await message.answer(question_text, reply_markup=keyboard)
+        logger.info(f"Successfully displayed question {question.id} for user {db_user.id}, message ID: {sent_msg.message_id}")
+        
+        # Store the message ID in state for future reference
+        if state:
+            await state.update_data(
+                last_question_message_id=sent_msg.message_id,
+                current_displayed_question_id=question.id
+            )
+        
+        return sent_msg
+    except Exception as e:
+        logger.error(f"Error displaying question {question.id} to user {db_user.id}: {e}", exc_info=True)
+        return None
+
+
+async def cleanup_previous_questions(message: types.Message, state: FSMContext) -> None:
+    """Clean up previously displayed unanswered question messages from the chat."""
+    data = await state.get_data()
+    last_question_message_id = data.get("last_question_message_id")
+    last_answered_msg_id = data.get("last_answered_msg_id")  # We don't want to delete this
+    
+    # Only delete if it exists and is not the most recently answered question
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete message {last_question_message_id}: {e}")
+
+
+async def check_and_display_next_question(message: types.Message, db_user, group_id: int, state: FSMContext, session: AsyncSession) -> bool:
+    """
+    Check if there are unanswered questions for the user and display the next one.
+    Returns True if a question was displayed, False otherwise.
+    """
+    try:
+        # Get user state data
+        data = await state.get_data()
+        last_displayed_question_id = data.get("last_displayed_question_id")
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        no_questions_shown = data.get("no_questions_shown", False)
+        session_id = data.get("session_id", f"{db_user.id}_{group_id}_{int(time.time())}")
+        
+        # Ensure we have a session ID for tracking purposes
+        if "session_id" not in data:
+            await state.update_data(session_id=session_id)
+            logger.info(f"Created new session ID {session_id} for user {db_user.id}")
+        
+        # Log the current session state for debugging
+        logger.info(f"Session {session_id}: User {db_user.id} in group {group_id}")
+        logger.info(f"Session {session_id}: Last displayed question: {last_displayed_question_id}")
+        logger.info(f"Session {session_id}: Recently shown questions: {recently_shown_questions}")
+        
+        # Ensure any pending changes are committed to avoid inconsistent state
+        try:
+            await session.commit()
+            await session.flush()  # Extra flush to ensure all pending changes are processed
+        except Exception as e:
+            logger.error(f"Error committing session in check_and_display_next_question: {e}")
+            
+        # Get user's current answers to make sure we have up-to-date data
+        # This is critical for PostgreSQL to avoid caching issues
+        try:
+            current_answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+            answered_ids = [a.question_id for a in current_answers]
+        except Exception as e:
+            logger.error(f"Error getting user answers in check_and_display_next_question: {e}")
+            answered_ids = []
+        
+        logger.info(f"Session {session_id}: User has answered {len(answered_ids)} questions in group {group_id}")
+        logger.info(f"Session {session_id}: Answered question IDs: {answered_ids}")
+        
+        # Get the total number of available questions for user in this group
+        try:
+            all_questions_query = select(Question).where(
+                Question.group_id == group_id,
+                Question.is_active == True
+            )
+            all_questions_result = await session.execute(all_questions_query)
+            all_questions = all_questions_result.scalars().all()
+            all_question_ids = [q.id for q in all_questions]
+            
+            total_questions = len(all_questions)
+            total_available = len([q for q in all_questions if q.id not in answered_ids])
+            
+            logger.info(f"Session {session_id}: Total active questions: {total_questions}")
+            logger.info(f"Session {session_id}: Total unanswered questions: {total_available}")
+            logger.info(f"Session {session_id}: All active question IDs: {all_question_ids}")
+        except Exception as e:
+            logger.error(f"Error getting all questions in check_and_display_next_question: {e}")
+            total_available = 1  # Assume there are questions to avoid resetting the recently shown list
+        
+        # If we've shown all questions or our list is getting too long, reset it
+        if (len(recently_shown_questions) >= total_available) or (len(recently_shown_questions) > 100):
+            recently_shown_questions = []
+            if last_displayed_question_id is not None:
+                recently_shown_questions = [last_displayed_question_id]  # Keep only the most recent one
+            logger.info(f"Session {session_id}: Reset recently shown questions list, new list: {recently_shown_questions}")
+        
+        # Add any already answered questions to our exclusion list to be super safe
+        exclusion_list = list(set(recently_shown_questions + answered_ids))
+        if last_displayed_question_id is not None and last_displayed_question_id not in exclusion_list:
+            exclusion_list.append(last_displayed_question_id)
+            
+        logger.info(f"Session {session_id}: Using exclusion list: {exclusion_list}")
+        
+        # Get the next unanswered question, excluding recently shown ones
+        try:
+            next_question = await question_repo.get_next_question_for_user(
+                session,
+                db_user.id,
+                group_id,
+                excluded_ids=exclusion_list
+            )
+        except Exception as e:
+            logger.error(f"Error in get_next_question_for_user: {e}", exc_info=True)
+            next_question = None
+        
+        # If no questions available when excluding recently shown ones,
+        # but there are unanswered questions, try again with minimal exclusions
+        if not next_question and total_available > 0:
+            logger.info(f"Session {session_id}: No new questions with current exclusions, trying with minimal exclusions")
+            # Only exclude questions we know for sure are answered
+            try:
+                next_question = await question_repo.get_next_question_for_user(
+                    session,
+                    db_user.id,
+                    group_id,
+                    excluded_ids=answered_ids
+                )
+            except Exception as e:
+                logger.error(f"Error in fallback get_next_question_for_user: {e}", exc_info=True)
+                next_question = None
+        
+        # Always prioritize new questions - they should be displayed immediately
+            # If we found a question, display it
+        if next_question:
+            # Double check it's not already answered (extreme caution)
+            if next_question.id in answered_ids:
+                logger.error(f"Session {session_id}: CRITICAL: Question {next_question.id} was already answered but was selected for display. Skipping it.")
+                # Try to recover by updating our state and returning False
+                await state.update_data(
+                    recently_shown_questions=exclusion_list + [next_question.id]
+                )
+                return False
+                
+            # Reset the "no questions shown" flag since we have a question to show
+            if no_questions_shown:
+                await state.update_data(no_questions_shown=False)
+                
+            # Clean up previous unanswered question messages to avoid having multiple unanswered questions
+            await cleanup_previous_questions(message, state)
+                
+            try:
+                await display_single_question(message, next_question, db_user, session, state)
+                logger.info(f"Session {session_id}: Successfully displayed question {next_question.id} for user {db_user.id}")
+            except Exception as e:
+                logger.error(f"Error displaying question {next_question.id}: {e}", exc_info=True)
+                await message.answer("An error occurred while displaying the question. Please try again.")
+                return False
+            
+            # Update recently shown questions
+            if next_question.id not in recently_shown_questions:
+                recently_shown_questions.append(next_question.id)
+            
+            # Update state with the question we just displayed and update recently shown
+            await state.update_data(
+                last_displayed_question_id=next_question.id,
+                recently_shown_questions=recently_shown_questions,
+                current_question_id=next_question.id  # Explicit tracking of current question
+            )
+            
+            return True
+        else:
+            # No more questions to answer
+            # Only show the message if we haven't shown it before
+            if not no_questions_shown:
+                try:
+                    no_questions_msg = await message.answer("No more questions from people at the moment")
+                    # Store the message ID so we can delete it later if needed
+                    await state.update_data(
+                        no_questions_msg_id=no_questions_msg.message_id,
+                        no_questions_shown=True
+                    )
+                    logger.info(f"Session {session_id}: No more questions available, displayed 'no questions' message")
+                except Exception as e:
+                    logger.error(f"Error sending 'no questions' message: {e}")
+            else:
+                logger.info(f"Session {session_id}: No more questions available, 'no questions' message already shown")
+            
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error in check_and_display_next_question for user {db_user.id}: {e}", exc_info=True)
+        try:
+            await message.answer("An error occurred while loading questions. Please try again.")
+        except Exception as send_error:
+            logger.error(f"Could not send error message: {send_error}")
+        return False
+
+
+async def can_delete_question(user_id: int, question, session: AsyncSession) -> bool:
+    """
+    Check if a user can delete a question.
+    Returns True if the user is either the author of the question or the creator of the group.
+    """
+    # Check if user is the author
+    if question.author_id == user_id:
+        return True
+        
+    # Check if user is the creator of the group
+    try:
+        is_group_creator = await group_repo.is_group_creator(session, user_id, question.group_id)
+        return is_group_creator
+    except Exception as e:
+        logger.error(f"Error checking if user {user_id} is group creator: {e}")
+        return False
+
+
+# Moved to load_answered_questions.py
 
 
 async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
@@ -1092,12 +3324,11 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
             logger.debug(f"Created keyboard for section {current_section} with points {points}")
         except Exception as keyboard_error:
             logger.error(f"Error creating keyboard: {keyboard_error}")
-            # Fallback to a simple keyboard
+            # Fallback to a simple keyboard with only three buttons
             keyboard = types.ReplyKeyboardMarkup(
                 keyboard=[
-                    [types.KeyboardButton(text="💬 Questions"), types.KeyboardButton(text="💞 Find Match")],
-                    [types.KeyboardButton(text="➕ Add Question"), types.KeyboardButton(text="ℹ️ Group Info")],
-                    [types.KeyboardButton(text="🏠 Start Menu")]
+                    [types.KeyboardButton(text="✨ Who vibes with you most now?")],
+                    [types.KeyboardButton(text="🏠 Team"), types.KeyboardButton(text="❓ Instructions")]
                 ],
                 resize_keyboard=True
             )
@@ -1107,12 +3338,12 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
         if text is None:
             if current_section == "questions":
                 display_text = f"📋 Questions in {group_name}"
-            elif current_section == "matches":
-                display_text = f"💞 Find matches in {group_name}"
+            elif current_section == "vibes":
+                display_text = f"✨ Who vibes with you most now? in {group_name}"
             elif current_section == "add_question":
                 display_text = f"➕ Add new question to {group_name}"
-            elif current_section == "group_info":
-                display_text = f"ℹ️ Information about {group_name}"
+            elif current_section == "team":
+                display_text = f"🏠 Team information for {group_name}"
             else:
                 # Default section - just show points, no welcome message
                 if points_text:
@@ -1144,19 +3375,41 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
         try:
             logger.info("Sending new menu message")
             menu_msg = await message.answer(display_text, reply_markup=keyboard, parse_mode="HTML")
+            
+            # Check for answered questions and show load button if needed
+            from src.bot.handlers.load_answered_questions import show_load_answered_questions_button
+            if session:
+                await show_load_answered_questions_button(message, state, session)
             await state.update_data(group_menu_msg_id=menu_msg.message_id)
             logger.info(f"Sent new menu message with ID: {menu_msg.message_id}")
+
+            # Check if there are unanswered questions and display one if available
+            if session:
+                try:
+                    user_tg = message.from_user
+                    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+                    if db_user:
+                        # Check for unanswered questions and display one if available
+                        displayed = await check_and_display_next_question(message, db_user, group_id, state, session)
+                        if displayed:
+                            logger.info(f"Automatically displayed an unanswered question after menu for user {db_user.id}")
+                        else:
+                            logger.info(f"No unanswered questions available to display for user {db_user.id}")
+                except Exception as question_error:
+                    logger.error(f"Error checking for unanswered questions: {question_error}", exc_info=True)
+            else:
+                logger.warning("No session provided to show_group_menu, skipping question display")
+        
         except Exception as answer_error:
             logger.error(f"Error sending menu message: {answer_error}")
-            # Last resort fallback - just show a plain text message
-            await message.answer(f"Welcome to {group_name}. Use the commands to navigate.")
-            logger.info("Sent fallback plain text message")
+            # Last resort fallback - just log the error, no user message
+            logger.info("Menu display failed, but not sending fallback message to keep chat clean")
     except Exception as e:
         logger.error(f"Error in show_group_menu: {e}")
         logger.exception("Full traceback for group menu error:")
         # Send a fallback message even if there's an error
         try:
-            await message.answer(f"Error showing menu for {group_name}. Please try /start to restart.")
+            await message.answer("❌ Menu error. Use /start.")
         except:
             pass
 
@@ -1258,21 +3511,21 @@ async def on_show_questions(message: types.Message, state: FSMContext, session: 
 
     if not db_user: # Final check
         logger.error(f"User {user_tg.id} not found in DB when showing questions (checked state ID and TG ID)")
-        await message.answer("Error: Could not find your user account. Please try /start again.")
+        await message.answer("❌ Account error. Use /start.")
         return
 
     data = await state.get_data()
     group_id = data.get("current_group_id")
     if not group_id:
         logger.error(f"No group_id found in state for user {user_tg.id}")
-        await message.answer("Error: Could not determine your current group. Please go back to the main menu.")
+        await message.answer("❌ Group not found. Use /start to restart.")
         return
         
     # Fetch group to get name
     group = await group_repo.get(session, group_id)
     if not group:
         logger.error(f"Group {group_id} not found in DB")
-        await message.answer("Error: Your team no longer exists. Please try /start again.")
+        await message.answer("❌ Team not found. Use /start.")
         return
     
     # Verify user is a member of this group
@@ -1745,6 +3998,8 @@ async def send_question_notification(bot: Bot, question_id: int, group_id: int, 
 async def process_new_question_text(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle the text entered by the user for a new question."""
     question_text = message.text.strip()
+    # Make sure the correct question text is stored in state
+    await state.update_data(new_question_text=question_text)
     user_id = message.from_user.id
     data = await state.get_data()
     group_id = data.get("current_group_id")
@@ -1774,7 +4029,7 @@ async def process_new_question_text(message: types.Message, state: FSMContext, s
     
     if not group_id:
         logger.error(f"User {user_id} submitted question but no group_id found in state.")
-        await message.answer("Error: Could not determine your current group. Please go back to the main menu.")
+        await message.answer("❌ Group not found. Use /start to restart.")
         await state.clear()
         return
         
@@ -1899,6 +4154,69 @@ async def process_new_question_text(message: types.Message, state: FSMContext, s
 async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     """Handle confirmation of adding a new question."""
     user_data = await state.get_data()
+
+    # Debug and validation for question text
+
+    logger.info(f"State data in on_confirm_add_question: {data}")
+
+    if 'new_question_text' not in data or not data.get('new_question_text'):
+
+        logger.error(f"Missing question text in state: {data}")
+
+        await callback.answer("Error: Missing question text", show_alert=True)
+
+        # Don't return yet, try to recover
+
+        # Check various possible keys where question text might be found
+
+        possible_keys = ['new_question_text', 'question_text', 'original_question_text', 'corrected_question_text']
+
+        for key in possible_keys:
+
+            if key in data and data[key]:
+
+                logger.info(f"Found question text in alternate key {key}: {data[key]}")
+
+                # Update the expected key
+
+                data['new_question_text'] = data[key]
+
+                await state.update_data(new_question_text=data[key])
+
+                break
+
+        else:  # This executes if no break occurred in the loop
+
+            # If we still don't have question text, look at the callback message
+
+            if callback.message and callback.message.text and '?' in callback.message.text:
+
+                # Extract the question from the message if it contains the confirmation text
+
+                message_text = callback.message.text
+
+                if 'Is this correct and ready to be added?' in message_text:
+
+                    # Extract the question part
+
+                    question_parts = message_text.split('Is this correct and ready to be added?')[0].strip()
+
+                    if question_parts:
+
+                        logger.info(f"Recovered question from message: {question_parts}")
+
+                        data['new_question_text'] = question_parts
+
+                        await state.update_data(new_question_text=question_parts)
+
+            else:
+
+                logger.error("Could not recover question text from any source")
+
+                await callback.answer("Still missing question text. Please try adding your question again.", show_alert=True)
+
+                return
+
     question_text = user_data.get("new_question_text", "")
     group_id = user_data.get("current_group_id")
     group_name = user_data.get("current_group_name", f"Team {group_id}")
@@ -1908,9 +4226,79 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
     last_question_message_id = user_data.get("last_question_message_id")
     last_answered_msg_id = user_data.get("last_answered_msg_id")  # We don't want to delete this
     
-    if not question_text or not group_id:
-        await callback.answer("Error: Missing question text or group ID", show_alert=True)
+    
+    # Add detailed logging before checking group_id and question_text
+    logger.info(f"DEBUG: on_confirm_add_question user_data: {user_data}")
+    logger.info(f"DEBUG: question_text = '{question_text}', group_id = {group_id}, group_name = '{group_name}'")
+    logger.info(f"DEBUG: State: {await state.get_state()}")
+
+    if not question_text:
+        await callback.answer("Error: Missing question text", show_alert=True)
         return
+    
+    # Add detailed logging for missing question text
+    logger.warning(f"[CRITICAL] Missing question text in on_confirm_add_question! State data: {user_data}")
+    
+    # If group_id is missing, try to auto-assign a group
+    if not group_id:
+        logger.info(f"User {callback.from_user.id} confirmed question but no group_id in state. Attempting to find or create a group.")
+        
+        # Get user from DB
+        user_tg = callback.from_user
+        db_user, _ = await user_repo.get_or_create_user(session, {
+            "id": user_tg.id,
+            "first_name": user_tg.first_name,
+            "last_name": user_tg.last_name,
+            "username": user_tg.username
+        })
+        
+        # Check if user belongs to any groups
+        user_groups = await group_repo.get_user_groups(session, db_user.id)
+        
+        if user_groups:
+            # User already has groups, use the first one
+            group = user_groups[0]
+            group_id = group.id
+            group_name = group.name
+            logger.info(f"Auto-selecting existing group {group_id} ({group_name}) for user {db_user.id}")
+        else:
+            # User has no groups, check for public groups
+            public_groups = await group_repo.get_public_groups(session)
+            
+            if public_groups:
+                # Join the first public group
+                group = public_groups[0]
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Added user {db_user.id} to public group {group_id} ({group_name})")
+            else:
+                # Create a new public "General" group if none exists
+                group = await group_repo.create_group(
+                    session=session,
+                    name="General",
+                    description="Default group for all users",
+                    created_by=db_user.id,
+                    is_public=True
+                )
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Created new public group {group_id} ({group_name}) for user {db_user.id}")
+        
+        # Update state with the group context
+        await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        
+        # Ensure question text is preserved when updating state
+        await state.update_data(new_question_text=question_text)
+        
+        # Get updated state data with the new group
+        user_data = await state.get_data()
+        # Make sure we keep the original question text
+        original_question_text = user_data.get('new_question_text', '')
+        if original_question_text:
+            question_text = original_question_text
+
     
     # Clean up any existing unanswered question messages to avoid multiple unanswered questions
     if last_question_message_id and last_question_message_id != last_answered_msg_id:
@@ -2819,7 +5207,7 @@ async def on_add_question(message: types.Message, state: FSMContext, session: As
     
     if not group_id or not group_name:
         logger.error(f"User {message.from_user.id} clicked Add Question but no group_id found in state.")
-        await message.answer("Error: Could not determine your current group. Please go back to the main menu.")
+        await message.answer("❌ Group not found. Use /start to restart.")
         return
     
     # Set state to creating question
@@ -3164,6 +5552,37 @@ async def on_find_match_callback(
         await callback.message.answer("❌ An error occurred while processing your request. Please try again.")
 
 
+
+
+async def handle_instructions_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle the instructions button click, show help text."""
+    await callback.answer()
+    
+    # Get user and state data
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    group_name = data.get("current_group_name")
+    
+    if not group_id or not group_name:
+        logger.warning(f"No group info in state for user {callback.from_user.id} when clicking instructions")
+        await callback.message.answer("Please use /start to select or create a team first.")
+        return
+    
+    # Get help text
+    help_text = ("⭐️ <b>Welcome to Allkinds Team Bot!</b> ⭐️\n\n"
+                "Here's how to use this bot:\n\n"
+                "1️⃣ <b>Answer questions</b> to help find people who share your values.\n\n"
+                "2️⃣ Click <b>✨ Who vibes with you most now?</b> to see who matches with you.\n\n"
+                "3️⃣ <b>Start anonymous chats</b> with your matches to connect.\n\n"
+                "4️⃣ Click <b>🏠 Team</b> to view team details and see your points balance.\n\n"
+                "Need more help? Contact the team admin.")
+    
+    try:
+        await callback.message.edit_text(help_text, parse_mode="HTML")
+        logger.info(f"Displayed instructions to user {callback.from_user.id} in group {group_id}")
+    except Exception as e:
+        logger.error(f"Error displaying instructions: {e}")
+        await callback.message.answer(help_text, parse_mode="HTML")
 async def on_show_start_menu_callback(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Handle show start menu callback button."""
     await callback.answer()
@@ -3206,13 +5625,342 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
         await show_welcome_menu(message)
 
 
+
+# Direct handler for load_answered_questions button
+async def on_load_answered_questions(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle the load_answered_questions button click."""
+    logger.info(f"Direct handler for load_answered_questions called by user {callback.from_user.id}")
+    
+    await callback.answer("Loading your answered questions...")
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        logger.error(f"User {user_tg.id} not found in DB when loading answered questions")
+        await callback.message.answer("Error: Could not find your user account. Please try /start again.")
+        return
+    
+    # Get current group from state
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    if not group_id:
+        logger.error(f"No group_id found in state for user {user_tg.id}")
+        await callback.message.answer("Error: Could not determine your current group.")
+        return
+    
+    # Get group info
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in DB")
+        await callback.message.answer("Error: Your team no longer exists.")
+        return
+    
+    # Get user's answers for this group
+    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+    if not answers:
+        await callback.message.answer("You haven't answered any questions in this team yet.")
+        return
+    
+    # Get the questions for these answers
+    question_ids = [a.question_id for a in answers]
+    questions = await question_repo.get_questions_by_ids(session, question_ids)
+    
+    # Create a map of question_id -> question for quick lookup
+    question_map = {q.id: q for q in questions}
+    
+    # Create a map of question_id -> answer for quick lookup
+    answer_map = {a.question_id: a for a in answers}
+    
+    # Send a message for each answered question
+    sent_count = 0
+    for question_id, answer in answer_map.items():
+        # Skip if question no longer exists (was deleted)
+        if question_id not in question_map:
+            continue
+            
+        question = question_map[question_id]
+        
+        # Check if user can delete this question
+        can_delete = await can_delete_question(db_user.id, question, session)
+        
+        # User has answered this question
+        answer_display = "Unknown"
+        if answer.answer_type == "skip":
+            answer_display = "⏭️"
+        else:
+            emoji_map = {
+                "strong_no": "👎👎", 
+                "no": "👎", 
+                "yes": "👍", 
+                "strong_yes": "👍👍"
+            }
+            answer_display = emoji_map.get(answer.answer_type, answer.answer_type)
+        
+        # Question text
+        question_text = question.text
+        
+        # Add action buttons
+        keyboard_buttons = []
+        # Answer button
+        keyboard_buttons.append(
+            types.InlineKeyboardButton(
+                text=answer_display,
+                callback_data=f"answer:{question.id}:toggle"
+            )
+        )
+        
+        # Delete button (for authors or group creators)
+        if can_delete:
+            keyboard_buttons.append(
+                types.InlineKeyboardButton(
+                    text="🗑️ Delete",
+                    callback_data=f"delete_question:{question.id}"
+                )
+            )
+        
+        # Create the keyboard with the appropriate buttons
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+        
+        # Send directly and get the sent message object
+        await callback.message.answer(question_text, reply_markup=keyboard)
+        sent_count += 1
+        
+        # Add a delay to avoid flood control
+        import asyncio
+        if sent_count % 5 == 0:
+            await asyncio.sleep(0.5)
+    
+    logger.info(f"Displayed {sent_count} answered questions for user {db_user.id}")
+    
+    # Explicitly set the state back to viewing_question to allow new questions
+    from src.bot.states import QuestionFlow
+    await state.set_state(QuestionFlow.viewing_question)
+    await state.update_data(current_question_id=None)  # Clear current question
+    logger.info(f"Reset state to viewing_question for user {callback.from_user.id}")
+        
+    # After showing all answers, check and display the next question if available
+    try:
+        await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+    except Exception as e:
+        logger.error(f"Error displaying next question after loading answers: {e}", exc_info=True)
+        # Make sure we at least notify if there are no more questions
+        await callback.message.answer("No more questions from people at the moment")
+
+
+
+# Direct handler for confirm_add_question to ensure question text is preserved
+async def on_confirm_add_question_direct(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle direct confirmation of adding a new question"""
+    # Only handle the specific callback data we care about
+    if not callback.data or not callback.data.startswith("confirm_add_question"):
+        return
+        
+    logger.info(f"Direct handler for confirm_add_question called by {callback.from_user.id}")
+    
+    # Get state data with debugging
+    data = await state.get_data()
+    logger.info(f"State data in direct handler: {data}")
+    
+    # Check for question text
+    question_text = data.get("new_question_text")
+    if not question_text:
+        logger.error(f"Missing question text: {data}")
+        await callback.answer("Error: Question text is missing. Please try adding your question again.", show_alert=True)
+        return
+        
+    # Get current group ID
+    group_id = data.get("current_group_id")
+    if not group_id:
+        logger.error(f"No group ID in state: {data}")
+        await callback.answer("Error: Could not determine your current team. Please try again.", show_alert=True)
+        return
+        
+    # Get user info
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        logger.error(f"Could not find user with Telegram ID {user_tg.id}")
+        await callback.answer("Error: Could not find your user account. Please try again.", show_alert=True)
+        return
+        
+    try:
+        # Answer the callback to stop the "loading" state
+        await callback.answer()
+        
+        # Delete the confirmation message
+        try:
+            await callback.message.delete()
+        except Exception as e:
+            logger.warning(f"Could not delete confirmation message: {e}")
+            
+        # Create the question
+        question = await question_repo.create_question(
+            session=session,
+            text=question_text,
+            created_by=db_user.id,
+            group_id=group_id
+        )
+        
+        # Log successful question creation
+        logger.info(f"User {db_user.id} created question {question.id}: {question_text}")
+        
+        # Show success message
+        await callback.message.answer(f"Your question has been added! ✅\n\n{question_text}")
+        
+        # Reset state to viewing_question
+        await state.set_state(QuestionFlow.viewing_question)
+        
+        # Check and display next question after submitting
+        await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+        
+    except Exception as e:
+        logger.error(f"Error creating question: {e}", exc_info=True)
+        await callback.message.answer("An error occurred while adding your question. Please try again.")
+
+
+
+# Standalone handler for load_answered_questions button
+async def load_answered_questions_handler(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    
+    # Register standalone handler for load_answered_questions button
+    logger.info("Registering standalone handler for load_answered_questions button")
+    dp.callback_query.register(
+        load_answered_questions_handler,
+        F.data == "load_answered_questions",
+        flags=needs_db
+    )
+    '''Handle the load_answered_questions button click.'''
+    logger.info(f"Direct handler for load_answered_questions called by user {callback.from_user.id}")
+    
+    # Log state information for debugging
+    current_state = await state.get_state() 
+    state_data = await state.get_data()
+    logger.info(f"State for user {callback.from_user.id}: {current_state}")
+    logger.info(f"State data keys: {list(state_data.keys())}")
+    
+    await callback.answer("Loading your answered questions...")
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        logger.error(f"User {user_tg.id} not found in DB when loading answered questions")
+        await callback.message.answer("Error: Could not find your user account. Please try /start again.")
+        return
+    
+    # Get current group from state
+    group_id = state_data.get("current_group_id")
+    if not group_id:
+        logger.error(f"No group_id found in state for user {user_tg.id}")
+        await callback.message.answer("Error: Could not determine your current group.")
+        return
+    
+    # Get group info
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in DB")
+        await callback.message.answer("Error: Your team no longer exists.")
+        return
+    
+    # Get user's answers for this group
+    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+    if not answers:
+        await callback.message.answer("You haven't answered any questions in this team yet.")
+        return
+    
+    # Get the questions for these answers
+    question_ids = [a.question_id for a in answers]
+    questions = await question_repo.get_questions_by_ids(session, question_ids)
+    
+    # Create a map of question_id -> question for quick lookup
+    question_map = {q.id: q for q in questions}
+    
+    # Create a map of question_id -> answer for quick lookup
+    answer_map = {a.question_id: a for a in answers}
+    
+    # Send a message for each answered question
+    sent_count = 0
+    for question_id, answer in answer_map.items():
+        # Skip if question no longer exists (was deleted)
+        if question_id not in question_map:
+            continue
+            
+        question = question_map[question_id]
+        
+        # Check if user can delete this question
+        can_delete = await can_delete_question(db_user.id, question, session)
+        
+        # User has answered this question
+        answer_display = "Unknown"
+        if answer.answer_type == "skip":
+            answer_display = "⏭️"
+        else:
+            emoji_map = {
+                "strong_no": "👎👎", 
+                "no": "👎", 
+                "yes": "👍", 
+                "strong_yes": "👍👍"
+            }
+            answer_display = emoji_map.get(answer.answer_type, answer.answer_type)
+        
+        # Question text
+        question_text = question.text
+        
+        # Add action buttons
+        keyboard_buttons = []
+        # Answer button
+        keyboard_buttons.append(
+            types.InlineKeyboardButton(
+                text=answer_display,
+                callback_data=f"answer:{question.id}:toggle"
+            )
+        )
+        
+        # Delete button (for authors or group creators)
+        if can_delete:
+            keyboard_buttons.append(
+                types.InlineKeyboardButton(
+                    text="🗑️ Delete",
+                    callback_data=f"delete_question:{question.id}"
+                )
+            )
+        
+        # Create the keyboard with the appropriate buttons
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+        
+        # Send directly and get the sent message object
+        await callback.message.answer(question_text, reply_markup=keyboard)
+        sent_count += 1
+        
+        # Add a delay to avoid flood control
+        import asyncio
+        if sent_count % 5 == 0:
+            await asyncio.sleep(0.5)
+    
+    logger.info(f"Displayed {sent_count} answered questions for user {db_user.id}")
+    
+    # Explicitly reset state to viewing_question
+    await state.set_state(QuestionFlow.viewing_question)
+    await state.update_data(current_question_id=None)
+    logger.info(f"Reset state to viewing_question for user {callback.from_user.id}")
+    
+    # After showing all answers, check and display the next question if available
+    try:
+        await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+    except Exception as e:
+        logger.error(f"Error displaying next question after loading answers: {e}", exc_info=True)
+        # Make sure we at least notify if there are no more questions
+        await callback.message.answer("No more questions from people at the moment")
+
+
 def register_handlers(dp: Dispatcher) -> None:
     """Register all handlers for the bot."""
     # Create flags
     needs_db = {"needs_db": True}
     
     # Basic commands
-    dp.message.register(cmd_start, Command("start"))
+    # Registration handled in __init__.py
     dp.message.register(cmd_clear_profile, Command("clear_profile"))
     dp.message.register(cmd_cancel, Command("cancel"))
     
@@ -3231,22 +5979,45 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_confirm_add_question, F.data.startswith("confirm_add_question"))
     dp.callback_query.register(on_cancel_add_question, F.data.startswith("cancel_add_question"))
     dp.callback_query.register(on_use_corrected_text, F.data.startswith("use_corrected_text"))
+    # Register direct handler for question confirmation
+    logger.info("Registering direct handler for confirm_add_question")
+    dp.callback_query.register(
+        on_confirm_add_question_direct, 
+        lambda c: c.data and c.data.startswith("confirm_add_question"),
+        flags=needs_db
+    )
+    
     dp.callback_query.register(on_use_original_text, F.data.startswith("use_original_text"))
     
     # Add handlers for reply keyboard buttons
     # Ensure these message handlers have the needs_db flag
     dp.message.register(handle_find_match_message, F.text == "Find Match", flags=needs_db)
-    dp.message.register(handle_group_info_message, F.text == "Group Info", flags=needs_db)
+    dp.message.register(handle_group_info_message, F.text == "Team", flags=needs_db)
     dp.message.register(handle_instructions_message, F.text == "Instructions", flags=needs_db)
     dp.message.register(handle_add_question_message, F.text == "Add Question", flags=needs_db)
+
+    # Add handlers for emoji versions of the buttons
+    dp.message.register(handle_find_match_message, F.text == "✨ Who vibes with you most now?", flags=needs_db)
+    dp.message.register(handle_group_info_message, F.text == "🏠 Team", flags=needs_db)
+    dp.message.register(handle_instructions_message, F.text == "❓ Instructions", flags=needs_db)
+    
     
     # Register the callback handlers for inline keyboard buttons
     dp.callback_query.register(on_add_question_callback, F.data == "add_question")
     dp.callback_query.register(on_find_match_callback, F.data == "find_match")
+    # Handle instructions button click
+    dp.callback_query.register(handle_instructions_callback, F.data == "show_instructions")
     dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
     
     # Answered Questions
-    dp.callback_query.register(on_load_answered_questions, F.data.startswith("load_answered_questions"))
+    # Registration moved to load_answered_questions.py)
+    # Add exact match registration as backup
+    # Direct registration for load_answered_questions button
+    logger.info("Registering direct handler for load_answered_questions")
+    # DISABLED to avoid conflicts: dp.callback_query.register(on_load_answered_questions, F.data == "load_answered_questions", flags=needs_db)
+    # DISABLED to avoid conflicts: dp.callback_query.register(on_load_answered_questions, lambda c: c.data == "load_answered_questions", flags=needs_db)
+    
+    # Registration moved to load_answered_questions.py
     
     # Delete Question
     dp.callback_query.register(on_delete_question_callback, F.data.startswith("delete_question_callback"))
@@ -3331,10 +6102,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(debug_callback)
     
     # Direct question entry - recognize messages that end with ? and are in a group context
-    dp.message.register(handle_direct_question_entry, lambda m: m.text and m.text.strip().endswith("?"))
+    dp.message.register(handle_direct_question_entry, lambda m: m.text and m.text.strip().endswith("?") and m.text.strip() not in ['Find Match', 'Team', 'Instructions', '💬 Questions', '✨ Who vibes with you most now?', '➕ Add Question', '🏠 Team', '❓ Help'] and m.text.strip() not in ['Find Match', 'Instructions', '💬 Questions', '💞 Find Match', '➕ Add Question', 'ℹ️ Group Info', '🏠 Start Menu'])
     
     # Also allow direct question entry when in the viewing_question state (to match previous behavior)
-    dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.viewing_question)
+    # Removed to avoid conflict with group_rename state
+    # dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.viewing_question)
     
     # Catch-all for text messages (register last for text handlers)
     # Only enable in development mode
@@ -3937,7 +6709,7 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
             logger.info(f"Sent welcome message to user {user_tg.id}")
         except Exception as e:
             logger.exception(f"Error sending welcome message: {e}")
-            await message.answer("Welcome to the group! Use the commands to navigate.")
+            logger.info("Not sending welcome message to keep chat clean")
             return
         
         # Get count of unanswered questions
@@ -3953,8 +6725,56 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
             # Add message about questions
             if unanswered_count > 0:
                 await message.answer(f"You have {unanswered_count} questions to answer. Here's the first one:")
-                # Display the first question (which won't trigger onboarding again)
-                await check_and_display_next_question(message, db_user, group_id, state, session)
+                # ENHANCED: Always display the first question after onboarding
+                try:
+                    # Get the next question directly from repository
+                    from src.db.repositories.question import QuestionRepository
+                    question_repo_direct = QuestionRepository()
+                    
+                    next_question = await question_repo_direct.get_next_question_for_user(
+                        session=session,
+                        user_id=db_user.id,
+                        group_id=group_id,
+                        excluded_ids=[],
+                        get_latest=True  # Get newest questions first
+                    )
+                    
+                    if next_question:
+                        logger.info(f"Found question {next_question.id} to push to user {user_tg.id} after onboarding")
+                        
+                        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                        
+                        # Create answer keyboard
+                        answer_keyboard = InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton("⛔ Strong No", callback_data=f"answer:{next_question.id}:strong_no"),
+                                    InlineKeyboardButton("❌ No", callback_data=f"answer:{next_question.id}:no")
+                                ],
+                                [
+                                    InlineKeyboardButton("✅ Yes", callback_data=f"answer:{next_question.id}:yes"),
+                                    InlineKeyboardButton("💯 Strong Yes", callback_data=f"answer:{next_question.id}:strong_yes")
+                                ]
+                            ]
+                        )
+                        
+                        # Format question
+                        question_author = "Anonymous"
+                        if hasattr(next_question, 'user') and next_question.user:
+                            if next_question.user.username:
+                                question_author = f"@{next_question.user.username}"
+                            elif next_question.user.first_name:
+                                question_author = next_question.user.first_name
+                        
+                        question_text = f"❓ {next_question.text}\n\nAsked by: {question_author}"
+                        await message.answer(question_text, reply_markup=answer_keyboard)
+                        logger.info(f"Successfully pushed question {next_question.id} to user {user_tg.id} after onboarding")
+                    else:
+                        # Fallback to regular display if direct push fails
+                        await check_and_display_next_question(message, db_user, group_id, state, session)
+                except Exception as q_error:
+                    logger.error(f"Error pushing question directly: {q_error}", exc_info=True)
+                    # Fallback to regular question display
             else:
                 await message.answer("You've answered all available questions in this group!")
         except Exception as e:
@@ -4454,8 +7274,7 @@ async def process_group_rename(message: types.Message, state: FSMContext, sessio
         await state.update_data(current_group_name=new_name)
         
         # Clear edit state
-        await state.set_state(QuestionFlow.viewing_question)
-        
+        await state.set_state(None)  # Clear state completely instead of setting to viewing_question
         # Show success message
         await message.answer(f"Group successfully renamed from <b>{old_name}</b> to <b>{new_name}</b>.", parse_mode="HTML")
         
@@ -4513,8 +7332,7 @@ async def process_group_description_edit(message: types.Message, state: FSMConte
         logger.info(f"Description of group {group_id} ({group_name}) updated by user {db_user.id}")
         
         # Clear edit state
-        await state.set_state(QuestionFlow.viewing_question)
-        
+        await state.set_state(None)  # Clear state completely instead of setting to viewing_question
         # Show success message
         await message.answer(f"Description of <b>{group_name}</b> has been updated.", parse_mode="HTML")
         
@@ -4655,7 +7473,19 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
     else:
         logger.info(f"Session is available of type {type(session)}, is_active={session.is_active if hasattr(session, 'is_active') else 'unknown'}")
     
-    # Get current group info
+    # Ensure state is active
+    if not state:
+        logger.error("[ERROR] State is None in handle_group_info_message!")
+        await message.answer("An error occurred. Please try /start to restart.")
+        return
+    
+    # Restore state to viewing questions if it\'s not in an active state
+    current_state = await state.get_state()
+    if not current_state:
+        logger.info(f"[DEBUG] Setting state to QuestionFlow.viewing_question for user {message.from_user.id}")
+        await state.set_state(QuestionFlow.viewing_question)
+    
+# Get current group info
     data = await state.get_data()
     logger.info(f"State data: {data}")
     group_id = data.get("current_group_id")
@@ -4665,6 +7495,9 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
         logger.error(f"Missing required data: group_id is None or empty")
         await message.answer("Please select a group first or reconnect to the bot by typing /start.")
         return
+        
+        # Debugging the state issue
+        logger.warning(f"[DEBUG_STATE] User {message.from_user.id} has no current_group_id in state. State data: {data}")
         
     if not session:
         logger.error(f"Session is None, cannot proceed with database operations")
@@ -4757,6 +7590,12 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
             f"<b>Your role:</b> {user_role.capitalize()}"
         ])
         
+        # Generate invite link
+        bot = message.bot
+        payload = f"g{group_id}"
+        invite_link = await create_start_link(bot, payload, encode=True)
+        logger.info(f"Generated invite link for group {group_id}: {invite_link}")
+        
         # Add share info
         if hasattr(group, 'join_code') and group.join_code:
             group_info.extend([
@@ -4764,6 +7603,13 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
                 f"<b>Share code:</b> <code>{group.join_code}</code>",
                 f"You can share this code with others to invite them to this group."
             ])
+
+        # Add invite link
+        group_info.extend([
+            f"",
+            f"<b>Invite link:</b> {invite_link}",
+            f"Share this link to invite others to this group."
+        ])
         
         # Create inline keyboard with management options
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -5112,7 +7958,6 @@ async def handle_add_question_message(message: types.Message, state: FSMContext,
         await message.answer("Please select a group first.")
         return
         
-    # Get the user from the database
     user_tg = message.from_user
     db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
     
@@ -5148,63 +7993,6 @@ Type /cancel to cancel."""
     )
 
 
-from aiogram import Dispatcher, F, types, Bot
-from aiogram.filters import Command, CommandObject
-from aiogram.fsm.context import FSMContext
-from aiogram.filters import StateFilter
-from aiogram.utils.deep_linking import decode_payload, create_start_link
-from loguru import logger
-import base64
-import asyncio
-import time
-from datetime import datetime
-import re
-import logging
-import os
-
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, update, and_
-
-# from src.bot.config import bot_settings # No longer needed
-from src.core.config import get_settings # Import main settings
-from src.bot.keyboards.inline import (
-    get_start_menu_keyboard, 
-    get_group_menu_keyboard, 
-    get_answer_keyboard_with_skip,
-    get_group_menu_reply_keyboard,
-    get_match_confirmation_keyboard # Import keyboard function (will create next)
-)
-from src.bot.states import TeamCreation, TeamJoining, QuestionFlow, MatchingStates, GroupOnboarding, GroupFlow
-from src.core.openai_service import is_yes_no_question, check_duplicate_question, check_spelling
-from src.db import get_session
-from src.db.repositories import (
-    user_repo, question_repo, answer_repo, group_repo,
-    create_match, get_match_between_users, 
-    create_chat_session, get_by_session_id, get_by_match_id, update_status
-)
-from src.db.models import Answer, User, AnswerType, MemberRole, Question, Match, GroupMember, Chat
-from src.bot.utils.matching import find_best_match
-from src.db.repositories.match_repo import get_match_between_users, create_match, find_matches, get_match
-from src.db.repositories.chat_session_repo import create_chat_session, get_by_match_id, update_status
-from src.db.repositories.chat_repo import get_chat_by_participants
-from src.core.diagnostics import get_diagnostics_report, IS_RAILWAY
-
-settings = get_settings() # Get settings from config
-
-# Constants
-FIND_MATCH_COST = 10  # Cost in points to find a match
-MIN_QUESTIONS_FOR_MATCH = 3  # Minimum number of answered questions needed to find a match
-
-# Define the mapping for answer values
-ANSWER_VALUES = {
-    "strong_no": -2,
-    "no": -1,
-    "skip": 0, # Special case for skip
-    "yes": 1,
-    "strong_yes": 2,
-}
-
-logger = logging.getLogger(__name__)
 
 async def get_answer_count(session: AsyncSession, user_id: int, group_id: int) -> int:
     """Count the number of answers for a user in a group."""
@@ -5617,7 +8405,8 @@ async def check_and_display_next_question(message: types.Message, db_user, group
                 logger.error(f"Error in fallback get_next_question_for_user: {e}", exc_info=True)
                 next_question = None
         
-        # If we found a question, display it
+        # Always prioritize new questions - they should be displayed immediately
+            # If we found a question, display it
         if next_question:
             # Double check it's not already answered (extreme caution)
             if next_question.id in answered_ids:
@@ -5700,111 +8489,7 @@ async def can_delete_question(user_id: int, question, session: AsyncSession) -> 
         return False
 
 
-async def on_load_answered_questions(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    """Handle the 'Load answered questions' button click."""
-    await callback.answer("Loading your answered questions...")
-    
-    # Get user from DB
-    user_tg = callback.from_user
-    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
-    if not db_user:
-        logger.error(f"User {user_tg.id} not found in DB when loading answered questions")
-        await callback.message.answer("Error: Could not find your user account. Please try /start again.")
-        return
-    
-    # Get current group from state
-    data = await state.get_data()
-    group_id = data.get("current_group_id")
-    if not group_id:
-        logger.error(f"No group_id found in state for user {user_tg.id}")
-        await callback.message.answer("Error: Could not determine your current group.")
-        return
-    
-    # Get group info
-    group = await group_repo.get(session, group_id)
-    if not group:
-        logger.error(f"Group {group_id} not found in DB")
-        await callback.message.answer("Error: Your team no longer exists.")
-        return
-    
-    # Get user's answers for this group
-    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
-    if not answers:
-        await callback.message.answer("You haven't answered any questions in this team yet.")
-        return
-    
-    # Get the questions for these answers
-    question_ids = [a.question_id for a in answers]
-    questions = await question_repo.get_questions_by_ids(session, question_ids)
-    
-    # Create a map of question_id -> question for quick lookup
-    question_map = {q.id: q for q in questions}
-    
-    # Create a map of question_id -> answer for quick lookup
-    answer_map = {a.question_id: a for a in answers}
-    
-    # Send a message for each answered question
-    sent_count = 0
-    for question_id, answer in answer_map.items():
-        # Skip if question no longer exists (was deleted)
-        if question_id not in question_map:
-            continue
-            
-        question = question_map[question_id]
-        
-        # Check if user can delete this question
-        can_delete = await can_delete_question(db_user.id, question, session)
-        
-        # User has answered this question
-        answer_display = "Unknown"
-        if answer.answer_type == "skip":
-            answer_display = "⏭️"
-        else:
-            emoji_map = {
-                "strong_no": "👎👎", 
-                "no": "👎", 
-                "yes": "👍", 
-                "strong_yes": "👍👍"
-            }
-            answer_display = emoji_map.get(answer.answer_type, answer.answer_type)
-        
-        # Question text
-        question_text = question.text
-        
-        # Add action buttons
-        keyboard_buttons = []
-        # Answer button
-        keyboard_buttons.append(
-            types.InlineKeyboardButton(
-                text=answer_display,
-                callback_data=f"answer:{question.id}:toggle"
-            )
-        )
-        
-        # Delete button (for authors or group creators)
-        if can_delete:
-            keyboard_buttons.append(
-                types.InlineKeyboardButton(
-                    text="🗑️ Delete",
-                    callback_data=f"delete_question:{question.id}"
-                )
-            )
-        
-        # Create the keyboard with the appropriate buttons
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
-        
-        # Send directly and get the sent message object
-        await callback.message.answer(question_text, reply_markup=keyboard)
-        sent_count += 1
-        
-        # Add a delay to avoid flood control
-        if sent_count % 5 == 0:
-            await asyncio.sleep(0.5)
-    
-    logger.info(f"Displayed {sent_count} answered questions for user {db_user.id}")
-    
-    # Check for unanswered questions and show the first one if available
-    await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+# Moved to load_answered_questions.py
 
 
 async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
@@ -6242,12 +8927,11 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
             logger.debug(f"Created keyboard for section {current_section} with points {points}")
         except Exception as keyboard_error:
             logger.error(f"Error creating keyboard: {keyboard_error}")
-            # Fallback to a simple keyboard
+            # Fallback to a simple keyboard with only three buttons
             keyboard = types.ReplyKeyboardMarkup(
                 keyboard=[
-                    [types.KeyboardButton(text="💬 Questions"), types.KeyboardButton(text="💞 Find Match")],
-                    [types.KeyboardButton(text="➕ Add Question"), types.KeyboardButton(text="ℹ️ Group Info")],
-                    [types.KeyboardButton(text="🏠 Start Menu")]
+                    [types.KeyboardButton(text="✨ Who vibes with you most now?")],
+                    [types.KeyboardButton(text="🏠 Team"), types.KeyboardButton(text="❓ Instructions")]
                 ],
                 resize_keyboard=True
             )
@@ -6257,12 +8941,12 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
         if text is None:
             if current_section == "questions":
                 display_text = f"📋 Questions in {group_name}"
-            elif current_section == "matches":
-                display_text = f"💞 Find matches in {group_name}"
+            elif current_section == "vibes":
+                display_text = f"✨ Who vibes with you most now? in {group_name}"
             elif current_section == "add_question":
                 display_text = f"➕ Add new question to {group_name}"
-            elif current_section == "group_info":
-                display_text = f"ℹ️ Information about {group_name}"
+            elif current_section == "team":
+                display_text = f"🏠 Team information for {group_name}"
             else:
                 # Default section - just show points, no welcome message
                 if points_text:
@@ -6294,19 +8978,41 @@ async def show_group_menu(message: types.Message, group_id: int, group_name: str
         try:
             logger.info("Sending new menu message")
             menu_msg = await message.answer(display_text, reply_markup=keyboard, parse_mode="HTML")
+            
+            # Check for answered questions and show load button if needed
+            from src.bot.handlers.load_answered_questions import show_load_answered_questions_button
+            if session:
+                await show_load_answered_questions_button(message, state, session)
             await state.update_data(group_menu_msg_id=menu_msg.message_id)
             logger.info(f"Sent new menu message with ID: {menu_msg.message_id}")
+
+            # Check if there are unanswered questions and display one if available
+            if session:
+                try:
+                    user_tg = message.from_user
+                    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+                    if db_user:
+                        # Check for unanswered questions and display one if available
+                        displayed = await check_and_display_next_question(message, db_user, group_id, state, session)
+                        if displayed:
+                            logger.info(f"Automatically displayed an unanswered question after menu for user {db_user.id}")
+                        else:
+                            logger.info(f"No unanswered questions available to display for user {db_user.id}")
+                except Exception as question_error:
+                    logger.error(f"Error checking for unanswered questions: {question_error}", exc_info=True)
+            else:
+                logger.warning("No session provided to show_group_menu, skipping question display")
+        
         except Exception as answer_error:
             logger.error(f"Error sending menu message: {answer_error}")
-            # Last resort fallback - just show a plain text message
-            await message.answer(f"Welcome to {group_name}. Use the commands to navigate.")
-            logger.info("Sent fallback plain text message")
+            # Last resort fallback - just log the error, no user message
+            logger.info("Menu display failed, but not sending fallback message to keep chat clean")
     except Exception as e:
         logger.error(f"Error in show_group_menu: {e}")
         logger.exception("Full traceback for group menu error:")
         # Send a fallback message even if there's an error
         try:
-            await message.answer(f"Error showing menu for {group_name}. Please try /start to restart.")
+            await message.answer("❌ Menu error. Use /start.")
         except:
             pass
 
@@ -6408,21 +9114,21 @@ async def on_show_questions(message: types.Message, state: FSMContext, session: 
 
     if not db_user: # Final check
         logger.error(f"User {user_tg.id} not found in DB when showing questions (checked state ID and TG ID)")
-        await message.answer("Error: Could not find your user account. Please try /start again.")
+        await message.answer("❌ Account error. Use /start.")
         return
 
     data = await state.get_data()
     group_id = data.get("current_group_id")
     if not group_id:
         logger.error(f"No group_id found in state for user {user_tg.id}")
-        await message.answer("Error: Could not determine your current group. Please go back to the main menu.")
+        await message.answer("❌ Group not found. Use /start to restart.")
         return
         
     # Fetch group to get name
     group = await group_repo.get(session, group_id)
     if not group:
         logger.error(f"Group {group_id} not found in DB")
-        await message.answer("Error: Your team no longer exists. Please try /start again.")
+        await message.answer("❌ Team not found. Use /start.")
         return
     
     # Verify user is a member of this group
@@ -6895,6 +9601,8 @@ async def send_question_notification(bot: Bot, question_id: int, group_id: int, 
 async def process_new_question_text(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
     """Handle the text entered by the user for a new question."""
     question_text = message.text.strip()
+    # Make sure the correct question text is stored in state
+    await state.update_data(new_question_text=question_text)
     user_id = message.from_user.id
     data = await state.get_data()
     group_id = data.get("current_group_id")
@@ -6924,7 +9632,7 @@ async def process_new_question_text(message: types.Message, state: FSMContext, s
     
     if not group_id:
         logger.error(f"User {user_id} submitted question but no group_id found in state.")
-        await message.answer("Error: Could not determine your current group. Please go back to the main menu.")
+        await message.answer("❌ Group not found. Use /start to restart.")
         await state.clear()
         return
         
@@ -7058,9 +9766,2394 @@ async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMConte
     last_question_message_id = user_data.get("last_question_message_id")
     last_answered_msg_id = user_data.get("last_answered_msg_id")  # We don't want to delete this
     
-    if not question_text or not group_id:
-        await callback.answer("Error: Missing question text or group ID", show_alert=True)
+    
+    # Add detailed logging before checking group_id and question_text
+    logger.info(f"DEBUG: on_confirm_add_question user_data: {user_data}")
+    logger.info(f"DEBUG: question_text = '{question_text}', group_id = {group_id}, group_name = '{group_name}'")
+    logger.info(f"DEBUG: State: {await state.get_state()}")
+
+    if not question_text:
+        await callback.answer("Error: Missing question text", show_alert=True)
         return
+    
+    # Add detailed logging for missing question text
+    logger.warning(f"[CRITICAL] Missing question text in on_confirm_add_question! State data: {user_data}")
+    
+    # If group_id is missing, try to auto-assign a group
+    if not group_id:
+        logger.info(f"User {callback.from_user.id} confirmed question but no group_id in state. Attempting to find or create a group.")
+        
+        # Get user from DB
+        user_tg = callback.from_user
+        db_user, _ = await user_repo.get_or_create_user(session, {
+            "id": user_tg.id,
+            "first_name": user_tg.first_name,
+            "last_name": user_tg.last_name,
+            "username": user_tg.username
+        })
+        
+        # Check if user belongs to any groups
+        user_groups = await group_repo.get_user_groups(session, db_user.id)
+        
+        if user_groups:
+            # User already has groups, use the first one
+            group = user_groups[0]
+            group_id = group.id
+            group_name = group.name
+            logger.info(f"Auto-selecting existing group {group_id} ({group_name}) for user {db_user.id}")
+        else:
+            # User has no groups, check for public groups
+            public_groups = await group_repo.get_public_groups(session)
+            
+            if public_groups:
+                # Join the first public group
+                group = public_groups[0]
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Added user {db_user.id} to public group {group_id} ({group_name})")
+            else:
+                # Create a new public "General" group if none exists
+                group = await group_repo.create_group(
+                    session=session,
+                    name="General",
+                    description="Default group for all users",
+                    created_by=db_user.id,
+                    is_public=True
+                )
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Created new public group {group_id} ({group_name}) for user {db_user.id}")
+        
+        # Update state with the group context
+        await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        
+        # Ensure question text is preserved when updating state
+        await state.update_data(new_question_text=question_text)
+        
+        # Get updated state data with the new group
+        user_data = await state.get_data()
+        # Make sure we keep the original question text
+        original_question_text = user_data.get('new_question_text', '')
+        if original_question_text:
+            question_text = original_question_text
+
+    
+    # Clean up any existing unanswered question messages to avoid multiple unanswered questions
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete previous unanswered question message: {e}")
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Create and save the question
+    try:
+        new_question = await question_repo.create_question(
+            session=session, 
+            author_id=db_user.id, 
+            group_id=group_id, 
+            text=question_text
+        )
+        logger.info(f"User {db_user.id} added question (ID: {new_question.id}) to group {group_id}: '{question_text[:20]}...'")
+        
+        # Award points for creating a question
+        updated_user = await user_repo.add_points(session, db_user.id, 5)
+        logger.info(f"Awarded 5 points to user {db_user.id} for creating a question. New balance: {updated_user.points}💎")
+        
+        # Delete the validation message if it exists
+        if validation_msg_id:
+            try:
+                await callback.bot.delete_message(
+                    chat_id=callback.message.chat.id,
+                    message_id=validation_msg_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to delete validation message: {e}")
+        
+        # Delete the confirmation message (the message with the inline buttons)
+        try:
+            if callback.message and callback.message.message_id:
+                await callback.message.delete()
+                logger.info(f"Deleted confirmation message with ID {callback.message.message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete confirmation message: {e}")
+            
+        # Delete the original question message if it exists
+        if original_question_message_id:
+            try:
+                await callback.bot.delete_message(
+                    chat_id=callback.message.chat.id,
+                    message_id=original_question_message_id
+                )
+                logger.info(f"Deleted original question message with ID {original_question_message_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete original question message: {e}")
+        
+        # Final success message - shorter and showing the balance
+        success_text = f"✅ Question added and 5 💎 points awarded.\nYour balance is: {updated_user.points} 💎 points."
+        success_msg = await callback.message.answer(success_text)
+        
+        # Store success message ID in state to delete it later when user answers
+        await state.update_data(question_added_success_msg_id=success_msg.message_id)
+        
+        # Send notification to other group members
+        try:
+            await send_question_notification(callback.bot, new_question.id, group_id, session)
+        except Exception as e:
+            logger.error(f"Failed to send question notifications: {e}")
+            # Continue execution - this is not a fatal error
+        
+        # Send the new question with answer buttons
+        keyboard = get_answer_keyboard_with_skip(new_question.id)
+        
+        # Add delete button for the author
+        # Get the current keyboard rows
+        current_rows = keyboard.inline_keyboard
+        # Add a second row with the delete button
+        delete_button = [
+            types.InlineKeyboardButton(
+                text="🗑️ Delete",
+                callback_data=f"delete_question:{new_question.id}"
+            )
+        ]
+        current_rows.append(delete_button)
+        # Create new keyboard with the additional row
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=current_rows)
+        
+        # Send the new question - just the text without quotes
+        question_msg = await callback.bot.send_message(
+            chat_id=callback.message.chat.id,
+            text=new_question.text,
+            reply_markup=keyboard
+        )
+        
+        # Get current recently shown questions
+        data = await state.get_data()
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        
+        # Add the new question to recently shown list
+        if new_question.id not in recently_shown_questions:
+            recently_shown_questions.append(new_question.id)
+            # Keep the list at a reasonable size
+            if len(recently_shown_questions) > 50:
+                recently_shown_questions = recently_shown_questions[-50:]
+        
+        # Store the question ID in state to prevent showing it again
+        await state.update_data(
+            last_displayed_question_id=new_question.id,
+            last_displayed_question_message_id=question_msg.message_id,
+            recently_shown_questions=recently_shown_questions
+        )
+        
+        # Set state back to viewing question
+        await state.set_state(QuestionFlow.viewing_question)
+        
+    except Exception as e:
+        logger.error(f"Error saving question: {str(e)}", exc_info=True)
+        # Try to provide a more useful error message
+        error_message = f"Failed to save your question. Error: {str(e)[:50]}"
+        try:
+            await callback.answer(error_message, show_alert=True)
+        except Exception:
+            # Fallback if callback answer fails
+            try:
+                await callback.message.reply(error_message)
+            except Exception as reply_error:
+                logger.error(f"Could not notify user of error: {reply_error}")
+        
+        # Try to rollback the transaction
+        try:
+            await session.rollback()
+        except Exception as rollback_error:
+            logger.error(f"Error rolling back transaction: {rollback_error}")
+
+
+async def on_cancel_add_question(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancellation of adding a new question."""
+    # Get message IDs for cleanup
+    data = await state.get_data()
+    original_question_message_id = data.get("original_question_message_id")
+    confirmation_message_id = data.get("confirmation_message_id")
+    validation_msg_id = data.get("validation_msg_id")
+    
+    # Set state back to viewing_question
+    await state.set_state(QuestionFlow.viewing_question)
+    
+    # Delete user's original message with the question text
+    if original_question_message_id:
+        try:
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id,
+                message_id=original_question_message_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete user's original question message: {e}")
+    
+    # Delete the confirmation message
+    if callback.message and callback.message.message_id:
+        try:
+            await callback.message.delete()
+            logger.info(f"Deleted confirmation message with ID {callback.message.message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete confirmation message: {e}")
+    
+    # Delete any validation messages
+    if validation_msg_id:
+        try:
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id,
+                message_id=validation_msg_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete validation message: {e}")
+    
+    # Acknowledge with a small popup
+    await callback.answer("Question cancelled")
+
+
+# --- Placeholder handlers for answering --- 
+async def process_answer_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handles callback when user answers a question, saves to DB, shows selected answer."""
+    
+    try:
+        # Parse the callback data
+        callback_data = callback.data
+        logger.info(f"Processing answer callback: {callback_data}")
+        
+        # Clean up any instruction or group info messages
+        data = await state.get_data()
+        group_info_msg_id = data.get("group_info_msg_id")
+        instructions_msg_id = data.get("instructions_msg_id")
+        find_match_message_id = data.get("find_match_message_id")
+        pending_match_message_id = data.get("pending_match_message_id")
+        
+        if group_info_msg_id:
+            try:
+                await callback.bot.delete_message(callback.message.chat.id, group_info_msg_id)
+                await state.update_data(group_info_msg_id=None)
+            except Exception as e:
+                logger.warning(f"Failed to delete group info message: {e}")
+        
+        if instructions_msg_id:
+            try:
+                await callback.bot.delete_message(callback.message.chat.id, instructions_msg_id)
+                await state.update_data(instructions_msg_id=None)
+            except Exception as e:
+                logger.warning(f"Failed to delete instructions message: {e}")
+                
+        if find_match_message_id:
+            try:
+                await callback.bot.delete_message(callback.message.chat.id, find_match_message_id)
+                await state.update_data(find_match_message_id=None)
+            except Exception as e:
+                logger.warning(f"Failed to delete find match message: {e}")
+                
+        if pending_match_message_id:
+            try:
+                await callback.bot.delete_message(callback.message.chat.id, pending_match_message_id)
+                await state.update_data(pending_match_message_id=None, has_pending_match=False)
+            except Exception as e:
+                logger.warning(f"Failed to delete pending match message: {e}")
+        
+        # Split by : to get parts
+        parts = callback_data.split(":")
+        if len(parts) < 3:
+            logger.error(f"Invalid callback data format: {callback_data}")
+            await callback.answer("Invalid callback data", show_alert=True)
+            return
+            
+        _, question_id_str, answer_type_str = parts
+        question_id = int(question_id_str)
+        
+        # Check if the question exists right away, before any processing
+        question = await question_repo.get(session, question_id)
+        if not question:
+            logger.info(f"User {callback.from_user.id} tried to answer a deleted question {question_id}")
+            await callback.answer("This question has been deleted.", show_alert=True)
+            
+            # Update the message to indicate the question is deleted
+            deleted_text = "❌ This question has been deleted."
+            try:
+                await callback.message.edit_text(deleted_text, reply_markup=None)
+                logger.info(f"Updated message to show question {question_id} was deleted")
+            except Exception as e:
+                logger.warning(f"Failed to update message for deleted question: {e}")
+            
+            return
+        
+        # Check if user is toggling the answer (clicked on the answer button)
+        if answer_type_str == "toggle":
+            logger.info(f"User {callback.from_user.id} toggling answer for question {question_id}")
+            # We've already checked the question exists at the beginning of the function
+                
+            # Show all answer options
+            full_keyboard = get_answer_keyboard_with_skip(question_id)
+            
+            # Add delete button if user is the author
+            user_tg = callback.from_user
+            db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+            if db_user and question.author_id == db_user.id:
+                # Add a second row with the delete button
+                delete_button = [
+                    types.InlineKeyboardButton(
+                        text="🗑️ Delete",
+                        callback_data=f"delete_question:{question.id}"
+                    )
+                ]
+                
+                # Get the current keyboard rows
+                current_rows = full_keyboard.inline_keyboard
+                # Add the delete button row
+                current_rows.append(delete_button)
+                # Create new keyboard with the additional row
+                full_keyboard = types.InlineKeyboardMarkup(inline_keyboard=current_rows)
+                
+            await callback.message.edit_reply_markup(reply_markup=full_keyboard)
+            await state.update_data(is_showing_single_answer=False)
+            await callback.answer("Choose a new answer")
+            return
+
+        # Process a new answer
+        telegram_user_id = callback.from_user.id
+        db_user = await user_repo.get_by_telegram_id(session, telegram_user_id)
+        if not db_user:
+            logger.error(f"User {telegram_user_id} not found in DB for answering.")
+            await callback.answer("Error: Could not find your user account.", show_alert=True)
+            return
+             
+        logger.info(f"User {db_user.id} processing answer for question {question_id} with '{answer_type_str}'")
+        
+        # Get the correct answer type value
+        actual_answer_type = answer_type_str
+        
+        answer_value = ANSWER_VALUES.get(actual_answer_type)
+        if answer_value is None:
+            logger.error(f"Invalid answer_type '{answer_type_str}' received for question {question_id}")
+            await callback.answer("Invalid answer selected.", show_alert=True)
+            return
+             
+        # Check if the user has already answered this question
+        existing_answer = await answer_repo.get_answer(session, db_user.id, question_id)
+        is_new_answer = existing_answer is None
+             
+        # Save the answer to the database
+        try:
+            saved_answer = await answer_repo.save_answer(
+                session=session,
+                user_id=db_user.id,
+                question_id=question_id,
+                answer_type=actual_answer_type,
+                value=answer_value
+            )
+            
+            # Award points only for new answers that are not skips
+            if is_new_answer and actual_answer_type != "skip":
+                updated_user = await user_repo.add_points(session, db_user.id, 1)
+                logger.info(f"Awarded 1 point to user {db_user.id} for answering a question. New balance: {updated_user.points}💎")
+                await callback.answer(f"Answer saved! +1💎 (Balance: {updated_user.points}💎)")
+            else:
+                await callback.answer("Answer updated! ✅")
+            
+            # Delete success message if this is a newly created question being answered
+            user_data = await state.get_data()
+            success_msg_id = user_data.get("question_added_success_msg_id")
+            if success_msg_id:
+                try:
+                    await callback.bot.delete_message(
+                        chat_id=callback.message.chat.id,
+                        message_id=success_msg_id
+                    )
+                    logger.info(f"Deleted question success message with ID {success_msg_id}")
+                    # Remove the message ID from state
+                    await state.update_data(question_added_success_msg_id=None)
+                except Exception as e:
+                    logger.warning(f"Failed to delete question success message: {e}")
+            
+            # Get the question data for buttons and display
+            question = await question_repo.get(session, question_id)
+            if not question:
+                await callback.answer("Cannot find this question anymore.", show_alert=True)
+                return
+                
+            # Get the emoji for the selected answer
+            selected_button_display_text = "Unknown"
+            if actual_answer_type == "skip":
+                selected_button_display_text = "⏭️"
+            else:
+                answer_map = {
+                    "strong_no": "👎👎", 
+                    "no": "👎", 
+                    "yes": "👍", 
+                    "strong_yes": "👍👍"
+                }
+                selected_button_display_text = answer_map.get(actual_answer_type, actual_answer_type)
+                
+            # Create keyboard buttons for answer
+            keyboard_buttons = [
+                types.InlineKeyboardButton(
+                    text=selected_button_display_text,
+                    callback_data=f"answer:{question.id}:toggle"
+                )
+            ]
+            
+            # Add delete button if user is the author
+            if question.author_id == db_user.id:
+                keyboard_buttons.append(
+                    types.InlineKeyboardButton(
+                        text="🗑️ Delete",
+                        callback_data=f"delete_question:{question.id}"
+                    )
+                )
+            
+            # Create the keyboard with the appropriate buttons
+            single_button_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+            
+            # Check if the message is a notification - keep question but remove the header
+            if callback.message and callback.message.text and callback.message.text.startswith("<b>📝 New Question in"):
+                # Extract just the question text (everything after the notification header)
+                question_text = question.text
+                
+                # Edit the message to show only the question text with the answer button
+                await callback.message.edit_text(
+                    text=question_text,
+                    reply_markup=single_button_keyboard
+                )
+                logger.info(f"Removed notification header for question {question_id} to keep chat clean")
+            else:
+                # Update the existing message with just the answer button
+                await callback.message.edit_reply_markup(reply_markup=single_button_keyboard)
+                logger.debug(f"Answer processed. Updated message with answer button for question {question_id}")
+            
+            # Store the message ID and question ID to handle toggling later
+            await state.update_data(
+                last_answered_msg_id=callback.message.message_id,
+                last_answered_q_id=question_id,
+                is_showing_single_answer=True
+            )
+            
+            # Explicitly commit the session to make sure the answer is saved to the database
+            # before we query for the next question
+            await session.commit()
+            
+            # For PostgreSQL in Railway, it's important to ensure the transaction is fully completed
+            # by explicitly refreshing the answer record and flushing the session
+            try:
+                # Flush any pending operations to ensure they're sent to the database
+                await session.flush()
+                
+                # Refresh the saved answer to ensure it's properly synchronized
+                if saved_answer:
+                    await session.refresh(saved_answer)
+                
+                logger.info(f"Session flushed and answer refreshed for question {question_id} by user {db_user.id}")
+            except Exception as e:
+                logger.warning(f"Error refreshing session state: {e}")
+            
+            logger.info(f"Session committed after saving answer for question {question_id} by user {db_user.id}")
+            
+            # Remove the scheduled deletion - we want to keep answered questions visible
+            # asyncio.create_task(delayed_message_deletion(callback.message, 2))
+            
+            # Get the next question for the user to answer using our helper function
+            # Use the question's group_id directly instead of fetching from state
+            group_id = question.group_id
+            logger.info(f"Fetching next question for user {db_user.id} in group {group_id}")
+            
+            if group_id:
+                # Reuse our centralized helper function to check and display the next question
+                await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+        except Exception as e:
+            logger.error(f"Error saving answer: {e}")
+            await callback.answer("Error saving answer. Please try again.", show_alert=True)
+                
+    except ValueError as e:
+        logger.error(f"Error parsing answer callback data: '{callback.data}', error: {e}")
+        await callback.answer("Error processing answer.", show_alert=True)
+    except Exception as e:
+        logger.exception(f"Error processing answer callback '{callback.data}': {e}")
+        try:
+            await callback.answer("Sorry, there was an error processing your answer.", show_alert=True)
+        except Exception:
+            chat_id = callback.message.chat.id
+            await callback.bot.send_message(chat_id, "Sorry, there was an error processing your answer.")
+            logger.error("Failed to send error message to user")
+
+async def delayed_message_deletion(message, delay_seconds=2):
+    """Delete a message after a specified delay"""
+    try:
+        await asyncio.sleep(delay_seconds)
+        await message.delete()
+        logger.info(f"Deleted message {message.message_id} after {delay_seconds} seconds")
+    except Exception as e:
+        logger.warning(f"Failed to delete message {message.message_id}: {e}")
+
+
+async def show_beta_message(message: types.Message) -> None:
+    """Function removed - no longer in use."""
+    # This function has been removed from active use
+    pass
+
+
+
+async def get_answer_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of answers for a user in a group."""
+    # Get all answers from this user for questions in this group
+    query = (
+        select(func.count())
+        .select_from(Answer)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} answers in group {group_id}")
+    return count
+
+async def get_unanswered_question_count(session: AsyncSession, user_id: int, group_id: int) -> int:
+    """Count the number of unanswered questions for a user in a group."""
+    # Get all answers from this user for questions in this group
+    answered_subquery = (
+        select(Answer.question_id)
+        .join(Question, Question.id == Answer.question_id)
+        .where(
+            Answer.user_id == user_id,
+            Question.group_id == group_id
+        )
+        .subquery()
+    )
+    
+    # Count questions that are active, in the specified group,
+    # and not in the list of questions the user has already answered
+    query = (
+        select(func.count())
+        .select_from(Question)
+        .where(
+            Question.group_id == group_id,
+            Question.is_active == True,
+            ~Question.id.in_(select(answered_subquery.c.question_id))
+        )
+    )
+    
+    result = await session.execute(query)
+    count = result.scalar_one_or_none() or 0
+    
+    logger.info(f"User {user_id} has {count} unanswered questions in group {group_id}")
+    return count
+
+
+async def cmd_start(message: types.Message, command: CommandObject = None, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle /start command."""
+    import base64
+    
+    # EXTENSIVE DEBUG LOGGING
+    logger.info(f"========== START COMMAND TRIGGERED ==========")
+    logger.info(f"From user: {message.from_user.id} ({message.from_user.username or 'no username'})")
+    logger.info(f"Message text: {message.text}")
+    logger.info(f"Command object: {command}")
+    logger.info(f"State available: {state is not None}")
+    logger.info(f"Session available: {session is not None}")
+    logger.info(f"USE_WEBHOOK environment: {os.environ.get('USE_WEBHOOK', 'not set')}")
+    logger.info(f"Bot running in: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')} environment")
+    
+    try:
+        # Basic logging
+        logger.info(f"Start command triggered from user {message.from_user.id}")
+        
+        # Extract potential command args from the message text directly
+        args = None
+        if message.text and message.text.startswith("/start "):
+            args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+            logger.info(f"DEBUG: Extracted args from message text: {args}")
+        # Also check the command object if available
+        elif command and command.args:
+            args = command.args
+            logger.info(f"DEBUG: Args from command object: {args}")
+        
+        if args:
+            logger.info(f"Processing start command with args: {args}")
+            try:
+                # Add padding back if needed
+                padding_needed = len(args) % 4
+                if padding_needed:
+                    padded_args = args + '=' * (4 - padding_needed)
+                else:
+                    padded_args = args
+                
+                # Try to decode as base64
+                try:
+                    decoded_payload = base64.urlsafe_b64decode(padded_args).decode('utf-8')
+                    logger.info(f"Successfully decoded base64 payload: {decoded_payload}")
+                    
+                    # Check if it's a group invite (g{id})
+                    if decoded_payload.startswith('g') and decoded_payload[1:].isdigit():
+                        group_id = int(decoded_payload[1:])
+                        logger.info(f"Base64 decoded invite for group {group_id}")
+                        await handle_group_invite(message, group_id, state, session)
+                        return
+                except Exception as e:
+                    logger.warning(f"Failed to decode base64 payload: {e}")
+                
+                # Fall back to older formats (for backward compatibility)
+                if args.startswith('join_') and args[5:].isdigit():
+                    group_id = int(args[5:])
+                    logger.info(f"Direct 'join_X' format invite for group {group_id}")
+                    await handle_group_invite(message, group_id, state, session)
+                    return
+            except Exception as e:
+                logger.error(f"Error processing start command args: {e}")
+                logger.exception("Full exception details:")
+        
+        user_tg = message.from_user
+        logger.info(f"User {user_tg.id} started the bot")
+        
+        # Ensure session is available (dependency injection handles this)
+        if not session:
+            logger.error("Database session not available in cmd_start")
+            await message.answer("Sorry, there was a problem connecting to the database. Please try again later.")
+            return
+            
+        try:
+            # Get or create user in DB - Convert Telegram user to dict manually
+            user_dict = {
+                "id": user_tg.id,
+                "first_name": user_tg.first_name,
+                "last_name": user_tg.last_name,
+                "username": user_tg.username,
+                "is_bot": user_tg.is_bot
+            }
+            
+            logger.info(f"Attempting to get or create user in DB with telegram_id={user_tg.id}")
+            db_user, created = await user_repo.get_or_create_user(session, user_dict)
+            if created:
+                logger.info(f"Created new user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+            else:
+                logger.info(f"Found existing user in DB: {db_user.id} (TG: {db_user.telegram_id})")
+        except Exception as db_error:
+            logger.error(f"Database error while getting/creating user: {db_error}")
+            logger.exception("Database operation traceback:")
+            await message.answer("Sorry, there was a database error. Please try again later.")
+            return
+
+        try:
+            # Check if user belongs to any groups
+            logger.info(f"Checking if user {db_user.id} belongs to any groups")
+            user_groups = await group_repo.get_user_groups(session, db_user.id)
+            logger.info(f"Found {len(user_groups) if user_groups else 0} groups for user {db_user.id}")
+        except Exception as group_error:
+            logger.error(f"Error retrieving user groups: {group_error}")
+            logger.exception("Group retrieval traceback:")
+            await message.answer("Sorry, there was an error retrieving your groups. Please try again later.")
+            return
+        
+        # Create state if it doesn't exist
+        if not state:
+            logger.info("State not provided, creating a new one")
+            try:
+                # Replace the attempt to create state manually (which doesn't work in this context)
+                # Instead, we'll just log a warning and continue without state
+                logger.warning("Cannot create state context dynamically in cmd_start, continuing without state")
+                
+                # REMOVE THIS PROBLEMATIC CODE:
+                # state = Dispatcher.get_current().fsm_storage.get_context(bot=message.bot, chat_id=message.chat.id, user_id=message.from_user.id)
+                # logger.info("Successfully created state context")
+            except Exception as state_error:
+                logger.error(f"Failed to create state context: {state_error}")
+                logger.exception("State creation traceback:")
+                # Continue without state
+        
+        # If user is already in groups, show the group menu
+        if user_groups:
+            # User is already in some group
+            # For now, consider that a user has just one group
+            group = user_groups[0]  # Take the first group
+            logger.info(f"User is in group {group.id}, showing group menu")
+            
+            try:
+                # Verify the group still exists
+                if not await group_repo.get(session, group.id):
+                    logger.warning(f"Group {group.id} no longer exists for user {user_tg.id}")
+                    await message.answer("This group was deleted.")
+                    await show_welcome_menu(message)
+                    return
+            
+                # Show the group menu
+                await show_group_menu(
+                    message=message,
+                    group_id=group.id,
+                    group_name=group.name,
+                    state=state,
+                    session=session
+                )
+            except Exception as group_menu_error:
+                logger.error(f"Error showing group menu: {group_menu_error}")
+                logger.exception("Group menu traceback:")
+                await message.answer("Sorry, there was an error displaying your group menu. Please try again.")
+                return
+        else:
+            # User is not in any group yet
+            logger.info(f"User {db_user.id} is not in any group, showing welcome menu")
+            try:
+                await show_welcome_menu(message)
+            except Exception as welcome_menu_error:
+                logger.error(f"Error showing welcome menu: {welcome_menu_error}")
+                logger.exception("Welcome menu traceback:")
+                await message.answer("Sorry, there was an error displaying the welcome menu. Please try again.")
+                return
+    except Exception as e:
+        logger.error(f"Unexpected error in cmd_start: {e}")
+        logger.exception("Full exception traceback:")
+        # Try to respond to user if possible
+        try:
+            await message.answer("Sorry, an unexpected error occurred. Please try again later.")
+        except Exception as reply_error:
+            logger.error(f"Failed to send error message to user: {reply_error}")
+    
+    logger.info("========== END OF START COMMAND ==========")
+
+
+async def display_single_question(message: types.Message, question, db_user, session: AsyncSession, state: FSMContext = None) -> None:
+    """Display a single question to the user."""
+    question_text = question.text
+    
+    # Check if the user can delete this question
+    can_delete = await can_delete_question(db_user.id, question, session)
+    
+    # Create keyboard with answer options
+    answer_buttons = [
+        types.InlineKeyboardButton(
+            text="👎👎",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👎",
+            callback_data=f"answer:{question.id}:{AnswerType.NO.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="⏭️",
+            callback_data=f"skip_question:{question.id}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍",
+            callback_data=f"answer:{question.id}:{AnswerType.YES.value}"
+        ),
+        types.InlineKeyboardButton(
+            text="👍👍",
+            callback_data=f"answer:{question.id}:{AnswerType.STRONG_YES.value}"
+        )
+    ]
+    
+    # Create a row for actions
+    action_buttons = []
+    
+    # Delete button (for authors or group creators)
+    if can_delete:
+        action_buttons.append(
+            types.InlineKeyboardButton(
+                text="🗑️ Delete",
+                callback_data=f"delete_question:{question.id}"
+            )
+        )
+    
+    # Create keyboard with answer options in first row and actions in second row
+    keyboard_rows = [answer_buttons]
+    if action_buttons:
+        keyboard_rows.append(action_buttons)
+        
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    try:
+        # Send the question and get the sent message object
+        sent_msg = await message.answer(question_text, reply_markup=keyboard)
+        logger.info(f"Successfully displayed question {question.id} for user {db_user.id}, message ID: {sent_msg.message_id}")
+        
+        # Store the message ID in state for future reference
+        if state:
+            await state.update_data(
+                last_question_message_id=sent_msg.message_id,
+                current_displayed_question_id=question.id
+            )
+        
+        return sent_msg
+    except Exception as e:
+        logger.error(f"Error displaying question {question.id} to user {db_user.id}: {e}", exc_info=True)
+        return None
+
+
+async def cleanup_previous_questions(message: types.Message, state: FSMContext) -> None:
+    """Clean up previously displayed unanswered question messages from the chat."""
+    data = await state.get_data()
+    last_question_message_id = data.get("last_question_message_id")
+    last_answered_msg_id = data.get("last_answered_msg_id")  # We don't want to delete this
+    
+    # Only delete if it exists and is not the most recently answered question
+    if last_question_message_id and last_question_message_id != last_answered_msg_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=last_question_message_id
+            )
+            logger.info(f"Deleted previous unanswered question message {last_question_message_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete message {last_question_message_id}: {e}")
+
+
+async def check_and_display_next_question(message: types.Message, db_user, group_id: int, state: FSMContext, session: AsyncSession) -> bool:
+    """
+    Check if there are unanswered questions for the user and display the next one.
+    Returns True if a question was displayed, False otherwise.
+    """
+    try:
+        # Get user state data
+        data = await state.get_data()
+        last_displayed_question_id = data.get("last_displayed_question_id")
+        recently_shown_questions = data.get("recently_shown_questions", [])
+        no_questions_shown = data.get("no_questions_shown", False)
+        session_id = data.get("session_id", f"{db_user.id}_{group_id}_{int(time.time())}")
+        
+        # Ensure we have a session ID for tracking purposes
+        if "session_id" not in data:
+            await state.update_data(session_id=session_id)
+            logger.info(f"Created new session ID {session_id} for user {db_user.id}")
+        
+        # Log the current session state for debugging
+        logger.info(f"Session {session_id}: User {db_user.id} in group {group_id}")
+        logger.info(f"Session {session_id}: Last displayed question: {last_displayed_question_id}")
+        logger.info(f"Session {session_id}: Recently shown questions: {recently_shown_questions}")
+        
+        # Ensure any pending changes are committed to avoid inconsistent state
+        try:
+            await session.commit()
+            await session.flush()  # Extra flush to ensure all pending changes are processed
+        except Exception as e:
+            logger.error(f"Error committing session in check_and_display_next_question: {e}")
+            
+        # Get user's current answers to make sure we have up-to-date data
+        # This is critical for PostgreSQL to avoid caching issues
+        try:
+            current_answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+            answered_ids = [a.question_id for a in current_answers]
+        except Exception as e:
+            logger.error(f"Error getting user answers in check_and_display_next_question: {e}")
+            answered_ids = []
+        
+        logger.info(f"Session {session_id}: User has answered {len(answered_ids)} questions in group {group_id}")
+        logger.info(f"Session {session_id}: Answered question IDs: {answered_ids}")
+        
+        # Get the total number of available questions for user in this group
+        try:
+            all_questions_query = select(Question).where(
+                Question.group_id == group_id,
+                Question.is_active == True
+            )
+            all_questions_result = await session.execute(all_questions_query)
+            all_questions = all_questions_result.scalars().all()
+            all_question_ids = [q.id for q in all_questions]
+            
+            total_questions = len(all_questions)
+            total_available = len([q for q in all_questions if q.id not in answered_ids])
+            
+            logger.info(f"Session {session_id}: Total active questions: {total_questions}")
+            logger.info(f"Session {session_id}: Total unanswered questions: {total_available}")
+            logger.info(f"Session {session_id}: All active question IDs: {all_question_ids}")
+        except Exception as e:
+            logger.error(f"Error getting all questions in check_and_display_next_question: {e}")
+            total_available = 1  # Assume there are questions to avoid resetting the recently shown list
+        
+        # If we've shown all questions or our list is getting too long, reset it
+        if (len(recently_shown_questions) >= total_available) or (len(recently_shown_questions) > 100):
+            recently_shown_questions = []
+            if last_displayed_question_id is not None:
+                recently_shown_questions = [last_displayed_question_id]  # Keep only the most recent one
+            logger.info(f"Session {session_id}: Reset recently shown questions list, new list: {recently_shown_questions}")
+        
+        # Add any already answered questions to our exclusion list to be super safe
+        exclusion_list = list(set(recently_shown_questions + answered_ids))
+        if last_displayed_question_id is not None and last_displayed_question_id not in exclusion_list:
+            exclusion_list.append(last_displayed_question_id)
+            
+        logger.info(f"Session {session_id}: Using exclusion list: {exclusion_list}")
+        
+        # Get the next unanswered question, excluding recently shown ones
+        try:
+            next_question = await question_repo.get_next_question_for_user(
+                session,
+                db_user.id,
+                group_id,
+                excluded_ids=exclusion_list
+            )
+        except Exception as e:
+            logger.error(f"Error in get_next_question_for_user: {e}", exc_info=True)
+            next_question = None
+        
+        # If no questions available when excluding recently shown ones,
+        # but there are unanswered questions, try again with minimal exclusions
+        if not next_question and total_available > 0:
+            logger.info(f"Session {session_id}: No new questions with current exclusions, trying with minimal exclusions")
+            # Only exclude questions we know for sure are answered
+            try:
+                next_question = await question_repo.get_next_question_for_user(
+                    session,
+                    db_user.id,
+                    group_id,
+                    excluded_ids=answered_ids
+                )
+            except Exception as e:
+                logger.error(f"Error in fallback get_next_question_for_user: {e}", exc_info=True)
+                next_question = None
+        
+        # Always prioritize new questions - they should be displayed immediately
+            # If we found a question, display it
+        if next_question:
+            # Double check it's not already answered (extreme caution)
+            if next_question.id in answered_ids:
+                logger.error(f"Session {session_id}: CRITICAL: Question {next_question.id} was already answered but was selected for display. Skipping it.")
+                # Try to recover by updating our state and returning False
+                await state.update_data(
+                    recently_shown_questions=exclusion_list + [next_question.id]
+                )
+                return False
+                
+            # Reset the "no questions shown" flag since we have a question to show
+            if no_questions_shown:
+                await state.update_data(no_questions_shown=False)
+                
+            # Clean up previous unanswered question messages to avoid having multiple unanswered questions
+            await cleanup_previous_questions(message, state)
+                
+            try:
+                await display_single_question(message, next_question, db_user, session, state)
+                logger.info(f"Session {session_id}: Successfully displayed question {next_question.id} for user {db_user.id}")
+            except Exception as e:
+                logger.error(f"Error displaying question {next_question.id}: {e}", exc_info=True)
+                await message.answer("An error occurred while displaying the question. Please try again.")
+                return False
+            
+            # Update recently shown questions
+            if next_question.id not in recently_shown_questions:
+                recently_shown_questions.append(next_question.id)
+            
+            # Update state with the question we just displayed and update recently shown
+            await state.update_data(
+                last_displayed_question_id=next_question.id,
+                recently_shown_questions=recently_shown_questions,
+                current_question_id=next_question.id  # Explicit tracking of current question
+            )
+            
+            return True
+        else:
+            # No more questions to answer
+            # Only show the message if we haven't shown it before
+            if not no_questions_shown:
+                try:
+                    no_questions_msg = await message.answer("No more questions from people at the moment")
+                    # Store the message ID so we can delete it later if needed
+                    await state.update_data(
+                        no_questions_msg_id=no_questions_msg.message_id,
+                        no_questions_shown=True
+                    )
+                    logger.info(f"Session {session_id}: No more questions available, displayed 'no questions' message")
+                except Exception as e:
+                    logger.error(f"Error sending 'no questions' message: {e}")
+            else:
+                logger.info(f"Session {session_id}: No more questions available, 'no questions' message already shown")
+            
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error in check_and_display_next_question for user {db_user.id}: {e}", exc_info=True)
+        try:
+            await message.answer("An error occurred while loading questions. Please try again.")
+        except Exception as send_error:
+            logger.error(f"Could not send error message: {send_error}")
+        return False
+
+
+async def can_delete_question(user_id: int, question, session: AsyncSession) -> bool:
+    """
+    Check if a user can delete a question.
+    Returns True if the user is either the author of the question or the creator of the group.
+    """
+    # Check if user is the author
+    if question.author_id == user_id:
+        return True
+        
+    # Check if user is the creator of the group
+    try:
+        is_group_creator = await group_repo.is_group_creator(session, user_id, question.group_id)
+        return is_group_creator
+    except Exception as e:
+        logger.error(f"Error checking if user {user_id} is group creator: {e}")
+        return False
+
+
+# Moved to load_answered_questions.py
+
+
+async def handle_group_invite(message: types.Message, group_id: int, state: FSMContext = None, session: AsyncSession = None) -> None:
+    """Handle when user is invited to a specific group."""
+    user = message.from_user
+    
+    # Fetch group details from database
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in database")
+        await message.answer("Sorry, this group no longer exists.")
+        return
+        
+    group_name = group.name
+    
+    logger.info(f"User {user.id} received invite to group {group_id} ({group_name})")
+    
+    welcome_text = (
+        f"👋 Welcome to Allkinds, {user.first_name}!\n\n"
+        f"You've been invited to join <b>{group_name}</b>.\n\n"
+        "Would you like to join this Team?"
+    )
+    
+    # Create keyboard with join/cancel options
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Join Team", callback_data=f"join_group:{group_id}"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_join"),
+        ]
+    ])
+    
+    # Store group_id in state
+    if state:
+        await state.update_data(invited_group_id=group_id)
+    
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def show_welcome_menu(message: types.Message) -> None:
+    """Show the welcome menu for the bot."""
+    # Improved logging for debugging
+    logger.info(f"Showing welcome menu to user {message.from_user.id}")
+    
+    keyboard = get_start_menu_keyboard()
+    
+    # Log keyboard structure to confirm it's generated correctly
+    logger.info(f"Generated keyboard structure: {keyboard}")
+    
+    welcome_text = (
+        "👋 Welcome to <b>AllKinds</b>!\n\n"
+        "This bot helps you connect with people who share your values.\n\n"
+        "What would you like to do?"
+    )
+    
+    try:
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+        logger.info(f"Welcome menu sent successfully to user {message.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending welcome menu: {e}")
+
+
+async def on_create_team(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle create team button callback."""
+    await callback.answer()
+    
+    text = (
+        "Let's create a new Team! 🚀\n\n"
+        "Please enter a name for your Team:"
+    )
+    
+    # Set user state to waiting for team name
+    await state.set_state(TeamCreation.waiting_for_name)
+    
+    await callback.message.answer(text)
+
+
+async def on_join_team(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
+    """Handle join team button callback."""
+    logger.info(f"User {callback.from_user.id} clicked Join Team button")
+    await callback.answer()
+    
+    # Get current state data
+    data = await state.get_data()
+    current_group_id = data.get("current_group_id")
+    
+    # Log current state for debugging
+    logger.info(f"User {callback.from_user.id} current state data: group_id={current_group_id}, all data: {data}")
+    
+    # Clear current group info to allow joining a new group
+    if current_group_id:
+        logger.info(f"User {callback.from_user.id} is currently in group {current_group_id}, clearing for join flow")
+        await state.update_data(current_group_id=None, current_group_name=None)
+    
+    text = (
+        "To join a Team, you need an invitation link or code.\n\n"
+        "Please enter the invitation code or ask the Team creator for an invitation link."
+    )
+    
+    # Set user state to waiting for team code
+    await state.set_state(TeamJoining.waiting_for_code)
+    current_state = await state.get_state()
+    logger.info(f"Set user {callback.from_user.id} state to {current_state}")
+    
+    try:
+        msg = await callback.message.answer(text)
+        logger.info(f"Successfully sent join team prompt to user {callback.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error sending join team prompt: {e}")
+        await callback.message.answer("An error occurred. Please try again by clicking /start.")
+
+
+async def on_cancel_join(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle cancel join button callback."""
+    await callback.answer("Canceled joining the team")
+    
+    # Clear state and return to main menu
+    await state.clear()
+    await show_welcome_menu(callback.message)
+
+
+async def process_team_name(message: types.Message, state: FSMContext) -> None:
+    """Process team name input from user."""
+    team_name = message.text.strip()
+    
+    if len(team_name) < 3:
+        await message.answer("Team name is too short. Please use at least 3 characters.")
+        return
+    
+    if len(team_name) > 50:
+        await message.answer("Team name is too long. Please use at most 50 characters.")
+        return
+    
+    # Store the team name
+    await state.update_data(team_name=team_name)
+    
+    # Ask for team description
+    await message.answer(
+        "Great! Now please provide a short description for your Team (optional).\n\n"
+        "Or type /skip to skip this step."
+    )
+    
+    # Update state
+    await state.set_state(TeamCreation.waiting_for_description)
+
+
+async def process_team_description(message: types.Message, state: FSMContext) -> None:
+    """Process team description input from user."""
+    # Check for skip command - handle both as command and as text
+    if message.text.strip() == "/skip":
+        logger.info("User skipped team description")
+        description = ""
+    else:
+        description = message.text.strip()
+        logger.info(f"User provided team description: {description[:20]}...")
+    
+    # Store the description
+    await state.update_data(team_description=description)
+    
+    # Get the stored team name
+    data = await state.get_data()
+    team_name = data.get("team_name", "Unknown Team")
+    
+    # Ask for confirmation
+    confirmation_text = (
+        f"Please confirm your team details:\n\n"
+        f"Name: {team_name}\n"
+    )
+    
+    if description:
+        confirmation_text += f"Description: {description}\n\n"
+    else:
+        confirmation_text += "Description: None\n\n"
+    
+    confirmation_text += "Is this correct?"
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Confirm", callback_data="confirm_team"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_team"),
+        ]
+    ])
+    
+    logger.info(f"Showing confirmation for team: {team_name}")
+    await message.answer(confirmation_text, reply_markup=keyboard)
+    
+    # Update state
+    await state.set_state(TeamCreation.confirm_creation)
+    current_state_check = await state.get_state() # Add check
+    logger.info(f"State set to: {current_state_check} before showing confirmation.") # Add log
+
+
+async def on_team_confirm(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle team creation confirmation."""
+    logger.info("--- Entered on_team_confirm handler (Restored) ---") # Restore log
+    current_state = await state.get_state()
+    logger.info(f"Current state inside on_team_confirm: {current_state}") # Check state
+    await callback.answer() # Acknowledge
+
+    # --- Restore the original function body ---
+    logger.info(f"User {callback.from_user.id} confirmed team creation.")
+    data = await state.get_data()
+    team_name = data.get("team_name")
+    team_description = data.get("team_description", "")
+
+    if not team_name:
+        logger.error("Team name not found in state during confirmation.")
+        await callback.message.answer("Error: Team details were lost. Please start over.")
+        await state.clear()
+        return
+
+    logger.debug(f"Attempting to create team: Name='{team_name}', Desc='{team_description}'")
+
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+
+    if not db_user:
+        logger.error(f"User {user_tg.id} not found in database during team confirmation.")
+        await callback.message.answer("Error creating team: User not found. Please try /start again.")
+        await state.clear()
+        return
+
+    try:
+        logger.debug("Calling group_repo.create...")
+        # Store the creator_id in a separate variable to ensure consistency
+        creator_id = db_user.id
+        
+        new_group = await group_repo.create(session, {
+            "creator_id": creator_id,  # Use the variable here
+            "name": team_name,
+            "description": team_description,
+            "is_active": True,
+            "is_private": False
+        })
+        logger.info(f"Group created with ID: {new_group.id}")
+
+        logger.debug(f"Adding creator {creator_id} to group {new_group.id}...")
+        # Use the same creator_id variable here to ensure consistency
+        await group_repo.add_user_to_group(
+            session,
+            creator_id,  # Use the same variable to ensure consistency
+            new_group.id,
+            role=MemberRole.CREATOR
+        )
+        logger.info(f"Added creator {creator_id} as member of group {new_group.id} with CREATOR role")
+
+        logger.debug("Generating invite link...")
+        bot = callback.bot
+        payload = f"g{new_group.id}"
+        from aiogram.utils.deep_linking import create_start_link
+        invite_link = await create_start_link(bot, payload, encode=True)
+        logger.info(f"Generated invite link: {invite_link}")
+
+        success_text = (
+            f"🎉 Your Team '{team_name}' has been created successfully!\n\n"
+            f"Share this link to invite others to your team:\n{invite_link}\n\n"
+            f"Click the button below to go to your team:"
+        )
+
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🚀 Go to the group", callback_data=f"go_to_group:{new_group.id}")]
+        ])
+
+        logger.info(f"Created team '{team_name}' with ID {new_group.id}, invite link: {invite_link}")
+
+        logger.debug("Sending success message...")
+        await callback.message.edit_text(success_text, reply_markup=keyboard)
+        logger.info("Success message sent.")
+
+        # Explicitly commit the session before clearing state
+        await session.commit()
+        logger.info("Session committed after successful team creation.")
+
+        # Instead of state.clear(), update state with essential info
+        await state.update_data(
+            team_name=None, # Clear specific temp data
+            team_description=None, # Clear specific temp data
+            current_group_id=new_group.id, # Keep group ID
+            current_group_name=new_group.name, # Keep group name
+            current_db_user_id=creator_id # <<< Store the creator_id (same as db_user.id)
+        )
+        await state.set_state(None) # Reset FSM state to default
+        logger.info(f"State updated after team creation: group={new_group.id}, user={creator_id}")
+
+    except Exception as e:
+        logger.exception(f"Error creating team for user {user_tg.id}")
+        # Add rollback here in case of error
+        await session.rollback()
+        logger.warning("Session rolled back due to error in team creation.")
+        try:
+            await callback.message.edit_text("Error creating team. Please try again or contact support.")
+        except Exception as send_err:
+            logger.error(f"Failed to send error message to user {user_tg.id}: {send_err}")
+
+
+async def on_team_cancel(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle team creation cancellation."""
+    await callback.answer("Team creation canceled")
+    
+    # Clear state and show welcome menu
+    await state.clear()
+    await show_welcome_menu(callback.message)
+
+
+async def process_join_code(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Process team join code input from user."""
+    code = message.text.strip()
+    
+    # Try to extract a group ID from the code (format should be g{ID})
+    group_id = None
+    if code.startswith('g') and code[1:].isdigit():
+        group_id = int(code[1:])
+    else:
+        await message.answer("Invalid code format. Please enter a valid team code.")
+        return
+    
+    # Check if the group exists in the database
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"User {message.from_user.id} tried to join nonexistent group {group_id}")
+        await message.answer("Sorry, this team doesn't exist. Please check the code and try again.")
+        return
+    
+    # Store the team info
+    await state.update_data(joining_team_id=group_id, joining_team_name=group.name)
+    
+    # Send confirmation
+    confirmation_text = (
+        f"You're about to join the team '{group.name}'.\n\n"
+        f"Is this correct?"
+    )
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Join", callback_data=f"confirm_join:{group_id}"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_join"),
+        ]
+    ])
+    
+    await message.answer(confirmation_text, reply_markup=keyboard)
+
+
+async def on_join_confirm(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle team join confirmation."""
+    await callback.answer()
+    
+    # Get team ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Get the group from database
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in database during join confirmation")
+        await callback.message.answer("Sorry, this group no longer exists.")
+        await state.clear()
+        return
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Add user to the group as a member
+    try:
+        await group_repo.add_user_to_group(session, db_user.id, group_id)
+        logger.info(f"Added user {db_user.id} to group {group_id} as a member")
+    except Exception as e:
+        logger.error(f"Error adding user to group: {e}")
+        await callback.message.answer("Error joining the team. Please try again.")
+        return
+    
+    success_text = (
+        f"🎉 You've successfully joined the team '{group.name}'!\n\n"
+        f"Use /questions to start answering questions in this team."
+    )
+    
+    logger.info(f"User {db_user.id} joined group {group_id} ({group.name})")
+    await callback.message.answer(success_text)
+    
+    # Update state data without showing redundant menu text
+    await state.update_data(current_group_id=group_id, current_group_name=group.name)
+    await state.set_state(QuestionFlow.viewing_question)
+    
+    # Show only the menu buttons without the redundant text
+    await show_group_menu(callback.message, group_id, group.name, state, current_section="questions", session=session)
+
+
+async def show_group_menu(message: types.Message, group_id: int, group_name: str, state: FSMContext, edit: bool = False, current_section: str = None, session: AsyncSession = None, text: str = None) -> None:
+    """Shows the main menu for a user within a group.
+    If text is None, will use a welcome message instead of trying to use invisible characters.
+    """
+    try:
+        logger.info(f"Showing group menu for user {message.from_user.id}, group {group_id} ({group_name}), section {current_section}")
+        
+        # Ensure we have valid parameters
+        if not group_id or not group_name:
+            logger.error(f"Invalid parameters for show_group_menu: group_id={group_id}, group_name={group_name}")
+            await message.answer("Error: Invalid group information. Please use /start to try again.")
+            return
+        
+        # Update state with group info
+        await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        logger.info(f"Updated state with group_id={group_id}, group_name={group_name}")
+        
+        # Set the viewing_question state to enable direct question entry
+        current_state = await state.get_state()
+        if current_state != QuestionFlow.creating_question and current_state != QuestionFlow.reviewing_question:
+            await state.set_state(QuestionFlow.viewing_question)
+            logger.info(f"Setting state to QuestionFlow.viewing_question for user {message.from_user.id}")
+        
+        # Get user points if session is provided
+        points = 0
+        points_text = ""
+        if session:
+            try:
+                user_tg = message.from_user
+                db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+                if db_user:
+                    points = db_user.points
+                    points_text = f"Your balance: 💎 {points} points"
+                    logger.info(f"Retrieved user points: {points}")
+                else:
+                    logger.warning(f"User {user_tg.id} not found in database when showing group menu")
+            except Exception as e:
+                logger.exception(f"Error retrieving user points: {e}")
+        else:
+            logger.warning("No session provided to show_group_menu, skipping points retrieval")
+        
+        # Get the reply keyboard with points balance
+        try:
+            keyboard = get_group_menu_reply_keyboard(current_section, balance=points)
+            logger.debug(f"Created keyboard for section {current_section} with points {points}")
+        except Exception as keyboard_error:
+            logger.error(f"Error creating keyboard: {keyboard_error}")
+            # Fallback to a simple keyboard with only three buttons
+            keyboard = types.ReplyKeyboardMarkup(
+                keyboard=[
+                    [types.KeyboardButton(text="✨ Who vibes with you most now?")],
+                    [types.KeyboardButton(text="🏠 Team"), types.KeyboardButton(text="❓ Instructions")]
+                ],
+                resize_keyboard=True
+            )
+            logger.info("Using fallback keyboard due to error")
+        
+        # Always use visible text - no more invisible characters
+        if text is None:
+            if current_section == "questions":
+                display_text = f"📋 Questions in {group_name}"
+            elif current_section == "vibes":
+                display_text = f"✨ Who vibes with you most now? in {group_name}"
+            elif current_section == "add_question":
+                display_text = f"➕ Add new question to {group_name}"
+            elif current_section == "team":
+                display_text = f"🏠 Team information for {group_name}"
+            else:
+                # Default section - just show points, no welcome message
+                if points_text:
+                    display_text = points_text
+                else:
+                    display_text = "・" # Minimal text character that Telegram accepts
+        else:
+            display_text = text
+            
+        logger.info(f"Using display text: '{display_text}'")
+
+        # Try editing the previous menu message if possible
+        data = await state.get_data()
+        prev_menu_msg_id = data.get("group_menu_msg_id")
+        is_callback = isinstance(message, types.CallbackQuery)
+        
+        if prev_menu_msg_id and is_callback: # Only edit on callbacks
+            try:
+                logger.info(f"Attempting to edit previous menu message {prev_menu_msg_id}")
+                await message.message.edit_text(display_text, reply_markup=keyboard, parse_mode="HTML")
+                await state.update_data(group_menu_msg_id=message.message.message_id) # Update stored ID
+                logger.info(f"Successfully edited menu message {prev_menu_msg_id}")
+                return # Edited successfully, no need to send new message
+            except Exception as edit_err:
+                logger.warning(f"Could not edit previous menu message {prev_menu_msg_id}: {edit_err}")
+                # Proceed to send a new message
+
+        # If editing failed or not applicable, send a new message
+        try:
+            logger.info("Sending new menu message")
+            menu_msg = await message.answer(display_text, reply_markup=keyboard, parse_mode="HTML")
+            
+            # Check for answered questions and show load button if needed
+            from src.bot.handlers.load_answered_questions import show_load_answered_questions_button
+            if session:
+                await show_load_answered_questions_button(message, state, session)
+            await state.update_data(group_menu_msg_id=menu_msg.message_id)
+            logger.info(f"Sent new menu message with ID: {menu_msg.message_id}")
+
+            # Check if there are unanswered questions and display one if available
+            if session:
+                try:
+                    user_tg = message.from_user
+                    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+                    if db_user:
+                        # Check for unanswered questions and display one if available
+                        displayed = await check_and_display_next_question(message, db_user, group_id, state, session)
+                        if displayed:
+                            logger.info(f"Automatically displayed an unanswered question after menu for user {db_user.id}")
+                        else:
+                            logger.info(f"No unanswered questions available to display for user {db_user.id}")
+                except Exception as question_error:
+                    logger.error(f"Error checking for unanswered questions: {question_error}", exc_info=True)
+            else:
+                logger.warning("No session provided to show_group_menu, skipping question display")
+        
+        except Exception as answer_error:
+            logger.error(f"Error sending menu message: {answer_error}")
+            # Last resort fallback - just log the error, no user message
+            logger.info("Menu display failed, but not sending fallback message to keep chat clean")
+    except Exception as e:
+        logger.error(f"Error in show_group_menu: {e}")
+        logger.exception("Full traceback for group menu error:")
+        # Send a fallback message even if there's an error
+        try:
+            await message.answer("❌ Menu error. Use /start.")
+        except:
+            pass
+
+
+async def on_join_group_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle when user clicks the Join Team button from invite."""
+    await callback.answer()
+    
+    # Extract group ID from callback data
+    group_id = int(callback.data.split(":")[1])
+    
+    # Fetch group details from database
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in database")
+        await callback.answer("Sorry, this group no longer exists.", show_alert=True)
+        return
+        
+    group_name = group.name
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user, _ = await user_repo.get_or_create_user(session, {
+        "id": user_tg.id,
+        "first_name": user_tg.first_name,
+        "last_name": user_tg.last_name,
+        "username": user_tg.username
+    })
+    
+    # Check if the user was previously in this group
+    was_member = await group_repo.is_user_in_group(session, db_user.id, group_id)
+    
+    # Add user to the group as a member (or update if already exists)
+    try:
+        await group_repo.add_user_to_group(session, db_user.id, group_id)
+        logger.info(f"Added user {db_user.id} to group {group_id} as a member")
+        
+        # If user is rejoining, make sure their profile data is cleared
+        if was_member:
+            logger.info(f"User {db_user.id} is rejoining group {group_id} - checking profile data")
+            
+            member = await group_repo.get_group_member(session, db_user.id, group_id)
+            if member and (getattr(member, "nickname", None) or getattr(member, "photo_file_id", None)):
+                logger.info(f"Clearing existing profile data for rejoining user {db_user.id}")
+                stmt = update(GroupMember).where(
+                    (GroupMember.user_id == db_user.id) & 
+                    (GroupMember.group_id == group_id)
+                ).values(
+                    nickname=None,
+                    photo_file_id=None
+                )
+                await session.execute(stmt)
+                await session.commit()
+    except Exception as e:
+        logger.error(f"Error adding user to group: {e}")
+        await callback.message.answer("Error joining the team. Please try again.")
+        return
+    
+    await state.update_data(
+        current_group_id=group_id,
+        current_group_name=group_name
+    )
+    
+    success_text = f"🎉 You've successfully joined <b>{group_name}</b>!"
+    logger.info(f"User {callback.from_user.id} joined group {group_id} ({group_name})")
+    
+    # Edit the original message to show success
+    await callback.message.edit_text(success_text, parse_mode="HTML")
+    
+    # Always force onboarding process when joining a group, since profile data may be cleared or never set
+    logger.info(f"Starting onboarding process for user {db_user.id} in group {group_id}")
+    await state.set_state(GroupOnboarding.waiting_for_nickname)
+    await callback.message.answer("To complete your profile, please enter your nickname for this group (2-32 characters, must be unique in this group):")
+    return
+
+
+# --- Placeholder handlers for group menu buttons ---
+
+async def on_show_questions(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Fetches and displays all questions for the user's group as a feed, with each question as a separate message."""
+    user_tg = message.from_user
+    data = await state.get_data() # Get state data first
+    db_user_id_from_state = data.get("current_db_user_id") # Check for passed DB ID
+
+    db_user = None
+    if db_user_id_from_state:
+        logger.info(f"Attempting to fetch user by DB ID {db_user_id_from_state} from state.")
+        db_user = await user_repo.get(session, db_user_id_from_state) # Fetch by DB ID
+        if db_user:
+             logger.info(f"Successfully fetched user by DB ID from state.")
+        else:
+             logger.warning(f"Failed to fetch user by DB ID {db_user_id_from_state} from state. Falling back to TG ID.")
+             # Clear the potentially invalid ID from state?
+             # await state.update_data(current_db_user_id=None)
+
+    if not db_user: # If fetch by DB ID failed or ID wasn't in state
+        logger.info(f"Fetching user by Telegram ID {user_tg.id}.")
+        db_user = await user_repo.get_by_telegram_id(session, user_tg.id) # Fallback fetch by TG ID
+
+    if not db_user: # Final check
+        logger.error(f"User {user_tg.id} not found in DB when showing questions (checked state ID and TG ID)")
+        await message.answer("❌ Account error. Use /start.")
+        return
+
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    if not group_id:
+        logger.error(f"No group_id found in state for user {user_tg.id}")
+        await message.answer("❌ Group not found. Use /start to restart.")
+        return
+        
+    # Fetch group to get name
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found in DB")
+        await message.answer("❌ Team not found. Use /start.")
+        return
+    
+    # Verify user is a member of this group
+    user_groups = await group_repo.get_user_groups(session, db_user.id)
+    is_member = any(g.id == group_id for g in user_groups)
+    if not is_member:
+        logger.warning(f"User {db_user.id} attempted to view questions for group {group_id} but is not a member")
+        await message.answer("You are not a member of this team. Please join first.")
+        return
+    
+    # Show the group menu with "Questions" section marked as current
+    await show_group_menu(message, group_id, group.name, state, current_section="questions", session=session)
+    
+    # Log the group membership 
+    logger.info(f"User {db_user.id} (TG: {user_tg.id}) viewing questions for group {group_id} ({group.name})")
+    
+    # Clear any previous question-message mappings to avoid stale data
+    await state.update_data(message_question_map={})
+    
+    # Set state to answering questions
+    await state.set_state(QuestionFlow.answering)
+    logger.info(f"Setting state to QuestionFlow.answering for question feed")
+    
+    # Get fresh list of ALL questions for the group - force a database refresh
+    # Clear any SQLAlchemy cache by using a new transaction
+    await session.commit()  # Commit any pending changes
+    questions = await question_repo.get_group_questions(session, group_id)
+    
+    # Log the number of questions found to help with debugging
+    logger.info(f"Found {len(questions)} active questions for group {group_id} for user {db_user.id}")
+    
+    # Get user's answers for this group - fresh query
+    answers = await answer_repo.get_answers_for_user_in_group(session, db_user.id, group_id)
+    
+    # Create a map of question_id -> answer for quick lookup
+    answer_map = {answer.question_id: answer for answer in answers}
+    
+    # Check if chat is private (DM) or group
+    chat_id = message.chat.id
+    
+    # Send welcome message
+    welcome_text = f"Questions for {group.name}:"
+    welcome_msg = await message.answer(welcome_text)
+    
+    # First, delete any existing question messages to avoid duplicates
+    try:
+        # Send a temporary message to indicate refreshing
+        status_msg = await message.answer("Refreshing questions...")
+        
+        # Track if user has any unanswered questions
+        has_unanswered = False
+        
+        # Dictionary to track which message_id corresponds to which question_id
+        message_question_map = {}
+        
+        # Separate questions into answered and unanswered
+        answered_questions = []
+        unanswered_questions = []
+        
+        for question in questions:
+            if question.id in answer_map:
+                answered_questions.append(question)
+            else:
+                unanswered_questions.append(question)
+                has_unanswered = True
+        
+        # Try to delete the status message
+        await status_msg.delete()
+    except Exception as e:
+        logger.error(f"Error preparing question display: {e}")
+        # Continue anyway
+    
+    # Display all answered questions first
+    for question in answered_questions:
+        answer = answer_map.get(question.id)
+        is_author = question.author_id == db_user.id
+        
+        # User has answered this question
+        answer_display = "Unknown"
+        if answer.answer_type == "skip":
+            answer_display = "⏭️"
+        else:
+            emoji_map = {
+                "strong_no": "👎👎", 
+                "no": "👎", 
+                "yes": "👍", 
+                "strong_yes": "👍👍"
+            }
+            answer_display = emoji_map.get(answer.answer_type, answer.answer_type)
+        
+        # Just the question text without quotation marks
+        question_text = question.text
+        
+        # Add action buttons
+        keyboard_buttons = []
+        # Answer button
+        keyboard_buttons.append(
+            types.InlineKeyboardButton(
+                text=answer_display,
+                callback_data=f"answer:{question.id}:toggle"
+            )
+        )
+        
+        # Delete button (only for authors)
+        if is_author:
+            keyboard_buttons.append(
+                types.InlineKeyboardButton(
+                    text="🗑️ Delete",
+                    callback_data=f"delete_question:{question.id}"
+                )
+            )
+            
+        # Create the keyboard with the appropriate buttons
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+        
+        # Send directly using bot.send_message and get the sent message object
+        sent_message = await message.bot.send_message(chat_id, question_text, reply_markup=keyboard)
+        
+        # Store the mapping between message_id and question_id
+        message_question_map[sent_message.message_id] = question.id
+        
+        # Add a delay to ensure separation and avoid flood control
+        await asyncio.sleep(0.3)
+    
+    # Then display all unanswered questions
+    for question in unanswered_questions:
+        is_author = question.author_id == db_user.id
+        
+        # Just the question text without quotation marks
+        question_text = question.text
+        
+        # Create keyboard with answer options
+        answer_buttons = [
+            types.InlineKeyboardButton(
+                text="👎👎",
+                callback_data=f"answer:{question.id}:{AnswerType.STRONG_NO.value}"
+            ),
+            types.InlineKeyboardButton(
+                text="👎",
+                callback_data=f"answer:{question.id}:{AnswerType.NO.value}"
+            ),
+            types.InlineKeyboardButton(
+                text="⏭️",
+                callback_data=f"skip_question:{question.id}"
+            ),
+            types.InlineKeyboardButton(
+                text="👍",
+                callback_data=f"answer:{question.id}:{AnswerType.YES.value}"
+            ),
+            types.InlineKeyboardButton(
+                text="👍👍",
+                callback_data=f"answer:{question.id}:{AnswerType.STRONG_YES.value}"
+            )
+        ]
+        
+        # Create a row for actions
+        action_buttons = []
+        
+        # Delete button (only for authors)
+        if is_author:
+            action_buttons.append(
+                types.InlineKeyboardButton(
+                    text="🗑️ Delete",
+                    callback_data=f"delete_question:{question.id}"
+                )
+            )
+        
+        # Create keyboard with answer options in first row and actions in second row
+        keyboard_rows = [answer_buttons]
+        if action_buttons:
+            keyboard_rows.append(action_buttons)
+            
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+        
+        # Send the question and get the sent message object
+        sent_message = await message.bot.send_message(chat_id, question_text, reply_markup=keyboard)
+        
+        # Store the mapping between message_id and question_id
+        message_question_map[sent_message.message_id] = question.id
+        
+        # Add a delay to ensure separation and avoid flood control
+        await asyncio.sleep(0.3)
+    
+    # Store the message_question_map in state for later reference
+    await state.update_data(message_question_map=message_question_map)
+    
+    # Check if no questions were found
+    if not answered_questions and not unanswered_questions:
+        await message.answer("No questions found for this group yet. Add the first question!")
+
+
+async def on_skip_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle when user skips a question via the skip button."""
+    await callback.answer("Question skipped")
+    
+    # Clean up any instruction or group info messages
+    data = await state.get_data()
+    group_info_msg_id = data.get("group_info_msg_id")
+    instructions_msg_id = data.get("instructions_msg_id")
+    find_match_message_id = data.get("find_match_message_id")
+    pending_match_message_id = data.get("pending_match_message_id")
+    
+    if group_info_msg_id:
+        try:
+            await callback.bot.delete_message(callback.message.chat.id, group_info_msg_id)
+            await state.update_data(group_info_msg_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete group info message: {e}")
+    
+    if instructions_msg_id:
+        try:
+            await callback.bot.delete_message(callback.message.chat.id, instructions_msg_id)
+            await state.update_data(instructions_msg_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete instructions message: {e}")
+    
+    if find_match_message_id:
+        try:
+            await callback.bot.delete_message(callback.message.chat.id, find_match_message_id)
+            await state.update_data(find_match_message_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete find match message: {e}")
+            
+    if pending_match_message_id:
+        try:
+            await callback.bot.delete_message(callback.message.chat.id, pending_match_message_id)
+            await state.update_data(pending_match_message_id=None, has_pending_match=False)
+        except Exception as e:
+            logger.warning(f"Failed to delete pending match message: {e}")
+    
+    # Extract question ID from callback data
+    question_id = int(callback.data.split(":")[1])
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        logger.error(f"User {user_tg.id} not found in DB for skipping.")
+        await callback.answer("Error: Could not find your user account.", show_alert=True)
+        return
+    
+    # Get the question to check authorship
+    question = await question_repo.get(session, question_id)
+    if not question:
+        await callback.answer("This question no longer exists.", show_alert=True)
+        return
+    
+    # Save skip answer
+    try:
+        await answer_repo.save_answer(
+            session=session,
+            user_id=db_user.id,
+            question_id=question_id,
+            answer_type="skip",
+            value=0
+        )
+        
+        logger.info(f"User {db_user.id} skipped question {question_id}")
+        
+        # Check if user can delete this question
+        can_delete = await can_delete_question(db_user.id, question, session)
+        
+        # Create keyboard buttons
+        keyboard_buttons = [
+            types.InlineKeyboardButton(
+                text="⏭️",
+                callback_data=f"answer:{question_id}:toggle"
+            )
+        ]
+        
+        # Add delete button if user can delete the question
+        if can_delete:
+            keyboard_buttons.append(
+                types.InlineKeyboardButton(
+                    text="🗑️ Delete",
+                    callback_data=f"delete_question:{question.id}"
+                )
+            )
+        
+        # Create the keyboard with the appropriate buttons
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[keyboard_buttons])
+        
+        # Edit the message to show the skipped status with delete button if author
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+        
+        # Explicitly commit the session to make sure the skip is saved to the database
+        # before we query for the next question
+        await session.commit()
+        
+        # For PostgreSQL in Railway environment, ensure the transaction is complete
+        try:
+            await session.flush()
+            logger.info(f"Session flushed after skipping question {question_id} by user {db_user.id}")
+        except Exception as e:
+            logger.warning(f"Error flushing session after skip: {e}")
+        
+        # Get the next question for the user to answer
+        # Use the question's group_id directly instead of fetching from state
+        group_id = question.group_id
+        if group_id:
+            # Use our helper function to check and display the next question
+            await check_and_display_next_question(callback.message, db_user, group_id, state, session)
+    except Exception as e:
+        logger.error(f"Error skipping question {question_id}: {e}")
+        await callback.answer("Error skipping question. Please try again.", show_alert=True)
+
+
+async def on_delete_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle when user wants to delete a question."""
+    await callback.answer("Delete this question?")
+    
+    # Parse question ID from callback data
+    question_id = int(callback.data.split(":")[1])
+    
+    # Set state to confirming_delete
+    await state.set_state(QuestionFlow.confirming_delete)
+    await state.update_data(delete_question_id=question_id)
+    
+    # Get the question from the database
+    question = await question_repo.get(session, question_id)
+    if not question:
+        await callback.message.edit_text("This question no longer exists.")
+        return
+    
+    # Create keyboard with confirm/cancel buttons
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(
+                text="✅ Delete",
+                callback_data=f"confirm_delete_question:{question_id}"
+            ),
+            types.InlineKeyboardButton(
+                text="❌ Cancel",
+                callback_data=f"cancel_delete_question:{question_id}"
+            ),
+        ]
+    ])
+    
+    # Show confirmation
+    await callback.message.edit_text(
+        text=f"Are you sure you want to delete this question?\n\n{question.text}",
+        reply_markup=keyboard
+    )
+
+
+async def on_confirm_delete_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle confirmation of question deletion."""
+    await callback.answer("Deleting question...")
+    
+    # Extract question ID from callback data
+    question_id = int(callback.data.split(":")[1])
+    
+    # Get user from DB
+    user_tg = callback.from_user
+    db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+    if not db_user:
+        await callback.message.edit_text("Error: Could not find your user account.")
+        return
+    
+    # Get the question
+    question = await question_repo.get(session, question_id)
+    if not question:
+        await callback.message.edit_text("This question no longer exists.")
+        return
+    
+    # Check if user can delete this question
+    can_delete = await can_delete_question(db_user.id, question, session)
+    if not can_delete:
+        await callback.message.edit_text("You can only delete questions you created or as a team creator.")
+        return
+    
+    # Delete the question
+    await question_repo.delete(session, question_id)
+    await session.commit()
+        
+    # Log the deletion
+    is_author = question.author_id == db_user.id
+    if is_author:
+        logger.info(f"User {db_user.id} deleted their own question {question_id}")
+    else:
+        logger.info(f"User {db_user.id} as group creator deleted question {question_id} created by user {question.author_id}")
+        
+    # Delete the message instead of showing "Question deleted"
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.warning(f"Failed to delete message after question deletion: {e}")
+    
+    # Clear state
+    await state.clear()
+    
+    # Get group ID and name from state data
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    group_name = data.get("current_group_name")
+    
+    # Set state back to viewing_question
+    if group_id and group_name:
+        await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        await state.set_state(QuestionFlow.viewing_question)
+
+
+async def on_cancel_delete_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """
+    Handle cancellation of question deletion.
+    Simply dismisses the confirmation dialog by deleting the message.
+    """
+    await callback.answer("Cancelled")
+    
+    # Delete the confirmation message
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.warning(f"Failed to delete confirmation message: {e}")
+    
+    # Clear confirmation state and return to viewing questions
+    await state.set_state(QuestionFlow.viewing_question)
+
+
+async def send_question_notification(bot: Bot, question_id: int, group_id: int, session: AsyncSession) -> None:
+    """Send a notification about a new question to all group members."""
+    question = await question_repo.get(session, question_id)
+    if not question:
+        logger.error(f"Question {question_id} not found for notification")
+        return
+        
+    group = await group_repo.get(session, group_id)
+    if not group:
+        logger.error(f"Group {group_id} not found for notification")
+        return
+    
+    # Get all group members
+    group_members = await group_repo.get_group_members(session, group_id)
+    logger.info(f"Sending notification about question {question_id} to {len(group_members)} group members")
+    
+    # Format the notification message with just the question text, no header
+    notification_text = question.text
+    
+    # Add answer buttons
+    keyboard = get_answer_keyboard_with_skip(question_id)
+    
+    # Send to each member except the author
+    notify_count = 0
+    for member in group_members:
+        if member.user_id != question.author_id:
+            try:
+                # Get user's Telegram ID
+                user = await user_repo.get(session, member.user_id)
+                if user and user.telegram_id:
+                    logger.debug(f"Sending notification for question {question_id} to user {user.telegram_id} (ID: {user.id})")
+                    sent_message = await bot.send_message(
+                        chat_id=user.telegram_id,
+                        text=notification_text,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                    if sent_message:
+                        notify_count += 1
+                        logger.info(f"Successfully sent question notification to user {user.telegram_id}")
+                    else:
+                        logger.warning(f"Failed to send notification to user {user.telegram_id} - message not returned")
+            except Exception as e:
+                logger.error(f"Failed to send question notification to user {member.user_id}: {e}")
+    
+    logger.info(f"Completed sending notifications: {notify_count} of {len(group_members)-1} users notified about question {question_id}")
+
+
+# --- Placeholder handlers for question confirmation ---
+
+async def process_new_question_text(message: types.Message, state: FSMContext, session: AsyncSession) -> None:
+    """Handle the text entered by the user for a new question."""
+    question_text = message.text.strip()
+    # Make sure the correct question text is stored in state
+    await state.update_data(new_question_text=question_text)
+    user_id = message.from_user.id
+    data = await state.get_data()
+    group_id = data.get("current_group_id")
+    
+    # Clean up any instruction or group info messages
+    group_info_msg_id = data.get("group_info_msg_id")
+    instructions_msg_id = data.get("instructions_msg_id")
+    
+    if group_info_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, group_info_msg_id)
+            await state.update_data(group_info_msg_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete group info message: {e}")
+    
+    if instructions_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, instructions_msg_id)
+            await state.update_data(instructions_msg_id=None)
+        except Exception as e:
+            logger.warning(f"Failed to delete instructions message: {e}")
+    
+    # Get message IDs for cleanup
+    question_prompt_msg_id = data.get("question_prompt_msg_id")
+    add_question_user_msg_id = data.get("add_question_user_msg_id")
+    menu_msg_id = data.get("menu_msg_id")
+    
+    if not group_id:
+        logger.error(f"User {user_id} submitted question but no group_id found in state.")
+        await message.answer("❌ Group not found. Use /start to restart.")
+        await state.clear()
+        return
+        
+    logger.info(f"User {user_id} submitted question text for group {group_id}: '{question_text[:50]}...'")
+    
+    # Basic validation
+    if len(question_text) < 10:
+        validation_msg = await message.answer("Your question seems a bit short. Please provide more detail.")
+        await state.update_data(validation_msg_id=validation_msg.message_id)
+        return
+    if len(question_text) > 500:
+        validation_msg = await message.answer("Your question is too long (max 500 characters). Please shorten it.")
+        await state.update_data(validation_msg_id=validation_msg.message_id)
+        return
+    
+    # Delete the "Please ask your yes/no question:" prompt message
+    if question_prompt_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, question_prompt_msg_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete question prompt message: {e}")
+    
+    # Delete the user's "➕ Add Question" message if it exists
+    if add_question_user_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, add_question_user_msg_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete add question user message: {e}")
+    
+    # Delete menu message if it exists (from callback path)
+    if menu_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, menu_msg_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete menu message: {e}")
+    
+    # Show waiting message while checking with OpenAI
+    waiting_msg = await message.answer("Checking your question, please wait...")
+    await state.update_data(waiting_msg_id=waiting_msg.message_id)
+    
+    # Check for spelling errors
+    has_spelling_errors, corrected_text = await check_spelling(question_text)
+    if has_spelling_errors:
+        # Delete waiting message
+        try:
+            await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete waiting message: {e}")
+            
+        # Store both versions of the text
+        await state.update_data(
+            original_question_text=question_text,
+            corrected_question_text=corrected_text
+        )
+        
+        # Show the correction suggestion with inline buttons
+        correction_text = f"Did you mean:\n\n<b>{corrected_text}</b>"
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text="✅ Yes, use this", callback_data="use_corrected_text"),
+                types.InlineKeyboardButton(text="❌ No, use original", callback_data="use_original_text"),
+            ]
+        ])
+        
+        correction_msg = await message.answer(correction_text, reply_markup=keyboard, parse_mode="HTML")
+        await state.update_data(
+            correction_msg_id=correction_msg.message_id,
+            original_question_message_id=message.message_id
+        )
+        await state.set_state(QuestionFlow.choosing_correction)
+        return
+    
+    # Check if it's a yes/no question using OpenAI
+    is_yes_no, yes_no_reason = await is_yes_no_question(question_text)
+    if not is_yes_no:
+        # Delete waiting message
+        try:
+            await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete waiting message: {e}")
+            
+        validation_msg = await message.answer("🙋‍♂️ Please ask a question that can be answered with Agree/Disagree.")
+        await state.update_data(validation_msg_id=validation_msg.message_id)
+        return
+    
+    # Check for duplicate questions
+    is_duplicate, duplicate_text, duplicate_id = await check_duplicate_question(question_text, group_id, session)
+    if is_duplicate:
+        # Delete waiting message
+        try:
+            await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete waiting message: {e}")
+            
+        duplicate_msg = await message.answer(f"🔄 This seems similar to an existing question. Please try a different question.")
+        await state.update_data(validation_msg_id=duplicate_msg.message_id)
+        return
+    
+    # Delete waiting message before showing confirmation
+    try:
+        await message.bot.delete_message(message.chat.id, waiting_msg.message_id)
+    except Exception as e:
+        logger.warning(f"Failed to delete waiting message: {e}")
+        
+    # Store the question text, user's message ID, and ask for confirmation
+    await state.update_data(
+        new_question_text=question_text,
+        original_question_message_id=message.message_id
+    )
+    confirmation_text = f"Your question:\n\n{question_text}\n\nIs this correct and ready to be added?"
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="✅ Yes", callback_data="confirm_add_question"),
+            types.InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_add_question"),
+        ]
+    ])
+    confirmation_message = await message.answer(confirmation_text, reply_markup=keyboard)
+    await state.update_data(confirmation_message_id=confirmation_message.message_id)
+    await state.set_state(QuestionFlow.reviewing_question)
+
+
+async def on_confirm_add_question(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Handle confirmation of adding a new question."""
+    user_data = await state.get_data()
+    question_text = user_data.get("new_question_text", "")
+    group_id = user_data.get("current_group_id")
+    group_name = user_data.get("current_group_name", f"Team {group_id}")
+    original_question_message_id = user_data.get("original_question_message_id")
+    confirmation_message_id = user_data.get("confirmation_message_id")
+    validation_msg_id = user_data.get("validation_msg_id")
+    last_question_message_id = user_data.get("last_question_message_id")
+    last_answered_msg_id = user_data.get("last_answered_msg_id")  # We don't want to delete this
+    
+    
+    # Add detailed logging before checking group_id and question_text
+    logger.info(f"DEBUG: on_confirm_add_question user_data: {user_data}")
+    logger.info(f"DEBUG: question_text = '{question_text}', group_id = {group_id}, group_name = '{group_name}'")
+    logger.info(f"DEBUG: State: {await state.get_state()}")
+
+    if not question_text:
+        await callback.answer("Error: Missing question text", show_alert=True)
+        return
+    
+    # Add detailed logging for missing question text
+    logger.warning(f"[CRITICAL] Missing question text in on_confirm_add_question! State data: {user_data}")
+    
+    # If group_id is missing, try to auto-assign a group
+    if not group_id:
+        logger.info(f"User {callback.from_user.id} confirmed question but no group_id in state. Attempting to find or create a group.")
+        
+        # Get user from DB
+        user_tg = callback.from_user
+        db_user, _ = await user_repo.get_or_create_user(session, {
+            "id": user_tg.id,
+            "first_name": user_tg.first_name,
+            "last_name": user_tg.last_name,
+            "username": user_tg.username
+        })
+        
+        # Check if user belongs to any groups
+        user_groups = await group_repo.get_user_groups(session, db_user.id)
+        
+        if user_groups:
+            # User already has groups, use the first one
+            group = user_groups[0]
+            group_id = group.id
+            group_name = group.name
+            logger.info(f"Auto-selecting existing group {group_id} ({group_name}) for user {db_user.id}")
+        else:
+            # User has no groups, check for public groups
+            public_groups = await group_repo.get_public_groups(session)
+            
+            if public_groups:
+                # Join the first public group
+                group = public_groups[0]
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Added user {db_user.id} to public group {group_id} ({group_name})")
+            else:
+                # Create a new public "General" group if none exists
+                group = await group_repo.create_group(
+                    session=session,
+                    name="General",
+                    description="Default group for all users",
+                    created_by=db_user.id,
+                    is_public=True
+                )
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Created new public group {group_id} ({group_name}) for user {db_user.id}")
+        
+        # Update state with the group context
+        await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        
+        # Ensure question text is preserved when updating state
+        await state.update_data(new_question_text=question_text)
+        
+        # Get updated state data with the new group
+        user_data = await state.get_data()
+        # Make sure we keep the original question text
+        original_question_text = user_data.get('new_question_text', '')
+        if original_question_text:
+            question_text = original_question_text
+
     
     # Clean up any existing unanswered question messages to avoid multiple unanswered questions
     if last_question_message_id and last_question_message_id != last_answered_msg_id:
@@ -7969,7 +13062,7 @@ async def on_add_question(message: types.Message, state: FSMContext, session: As
     
     if not group_id or not group_name:
         logger.error(f"User {message.from_user.id} clicked Add Question but no group_id found in state.")
-        await message.answer("Error: Could not determine your current group. Please go back to the main menu.")
+        await message.answer("❌ Group not found. Use /start to restart.")
         return
     
     # Set state to creating question
@@ -8279,6 +13372,7 @@ async def on_find_match_callback(
     callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None
 ) -> None:
     """Handle the 'Find Match' button from inline keyboard."""
+    logger.info(f"[DEBUG_MATCH] on_find_match_callback triggered by user {callback.from_user.id}, data={callback.data}")
     logger.info(f"[DEBUG] Find Match callback triggered by user {callback.from_user.id}")
     logger.info(f"[DEBUG] Callback data: '{callback.data}'")
     logger.info(f"[DEBUG] Session available: {session is not None}, type: {type(session) if session else 'None'}")
@@ -8355,13 +13449,12 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
         await show_welcome_menu(message)
 
 
-def register_handlers(dp: Dispatcher) -> None:
     """Register all handlers for the bot."""
     # Create flags
     needs_db = {"needs_db": True}
     
     # Basic commands
-    dp.message.register(cmd_start, Command("start"))
+    # Registration handled in __init__.py
     dp.message.register(cmd_clear_profile, Command("clear_profile"))
     dp.message.register(cmd_cancel, Command("cancel"))
     
@@ -8385,9 +13478,13 @@ def register_handlers(dp: Dispatcher) -> None:
     # Add handlers for reply keyboard buttons
     # Ensure these message handlers have the needs_db flag
     dp.message.register(handle_find_match_message, F.text == "Find Match", flags=needs_db)
-    dp.message.register(handle_group_info_message, F.text == "Group Info", flags=needs_db)
+    dp.message.register(handle_group_info_message, F.text == "Team", flags=needs_db)
     dp.message.register(handle_instructions_message, F.text == "Instructions", flags=needs_db)
     dp.message.register(handle_add_question_message, F.text == "Add Question", flags=needs_db)
+
+    # Add handlers for emoji versions of the buttons
+    dp.message.register(handle_find_match_message, F.text == "✨ Who vibes with you most now?", flags=needs_db)
+    dp.message.register(handle_group_info_message, F.text == "🏠 Team", flags=needs_db)
     
     # Register the callback handlers for inline keyboard buttons
     dp.callback_query.register(on_add_question_callback, F.data == "add_question")
@@ -8395,7 +13492,9 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(on_show_questions_callback, F.data == "show_questions")
     
     # Answered Questions
-    dp.callback_query.register(on_load_answered_questions, F.data.startswith("load_answered_questions"))
+    # Registration moved to load_answered_questions.py)
+    # Add exact match registration as backup
+    # Registration moved to load_answered_questions.py
     
     # Delete Question
     dp.callback_query.register(on_delete_question_callback, F.data.startswith("delete_question_callback"))
@@ -8480,10 +13579,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.callback_query.register(debug_callback)
     
     # Direct question entry - recognize messages that end with ? and are in a group context
-    dp.message.register(handle_direct_question_entry, lambda m: m.text and m.text.strip().endswith("?"))
+    dp.message.register(handle_direct_question_entry, lambda m: m.text and m.text.strip().endswith("?") and m.text.strip() not in ['Find Match', 'Team', 'Instructions', '💬 Questions', '✨ Who vibes with you most now?', '➕ Add Question', '🏠 Team', '❓ Help'] and m.text.strip() not in ['Find Match', 'Instructions', '💬 Questions', '💞 Find Match', '➕ Add Question', 'ℹ️ Group Info', '🏠 Start Menu'])
     
     # Also allow direct question entry when in the viewing_question state (to match previous behavior)
-    dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.viewing_question)
+    # Removed to avoid conflict with group_rename state
+    # dp.message.register(handle_direct_question_entry, F.text, QuestionFlow.viewing_question)
     
     # Catch-all for text messages (register last for text handlers)
     # Only enable in development mode
@@ -9084,7 +14184,7 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
             logger.info(f"Sent welcome message to user {user_tg.id}")
         except Exception as e:
             logger.exception(f"Error sending welcome message: {e}")
-            await message.answer("Welcome to the group! Use the commands to navigate.")
+            logger.info("Not sending welcome message to keep chat clean")
             return
         
         # Get count of unanswered questions
@@ -9100,8 +14200,56 @@ async def process_group_photo(message: types.Message, state: FSMContext, session
             # Add message about questions
             if unanswered_count > 0:
                 await message.answer(f"You have {unanswered_count} questions to answer. Here's the first one:")
-                # Display the first question (which won't trigger onboarding again)
-                await check_and_display_next_question(message, db_user, group_id, state, session)
+                # ENHANCED: Always display the first question after onboarding
+                try:
+                    # Get the next question directly from repository
+                    from src.db.repositories.question import QuestionRepository
+                    question_repo_direct = QuestionRepository()
+                    
+                    next_question = await question_repo_direct.get_next_question_for_user(
+                        session=session,
+                        user_id=db_user.id,
+                        group_id=group_id,
+                        excluded_ids=[],
+                        get_latest=True  # Get newest questions first
+                    )
+                    
+                    if next_question:
+                        logger.info(f"Found question {next_question.id} to push to user {user_tg.id} after onboarding")
+                        
+                        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                        
+                        # Create answer keyboard
+                        answer_keyboard = InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton("⛔ Strong No", callback_data=f"answer:{next_question.id}:strong_no"),
+                                    InlineKeyboardButton("❌ No", callback_data=f"answer:{next_question.id}:no")
+                                ],
+                                [
+                                    InlineKeyboardButton("✅ Yes", callback_data=f"answer:{next_question.id}:yes"),
+                                    InlineKeyboardButton("💯 Strong Yes", callback_data=f"answer:{next_question.id}:strong_yes")
+                                ]
+                            ]
+                        )
+                        
+                        # Format question
+                        question_author = "Anonymous"
+                        if hasattr(next_question, 'user') and next_question.user:
+                            if next_question.user.username:
+                                question_author = f"@{next_question.user.username}"
+                            elif next_question.user.first_name:
+                                question_author = next_question.user.first_name
+                        
+                        question_text = f"❓ {next_question.text}\n\nAsked by: {question_author}"
+                        await message.answer(question_text, reply_markup=answer_keyboard)
+                        logger.info(f"Successfully pushed question {next_question.id} to user {user_tg.id} after onboarding")
+                    else:
+                        # Fallback to regular display if direct push fails
+                        await check_and_display_next_question(message, db_user, group_id, state, session)
+                except Exception as q_error:
+                    logger.error(f"Error pushing question directly: {q_error}", exc_info=True)
+                    # Fallback to regular question display
             else:
                 await message.answer("You've answered all available questions in this group!")
         except Exception as e:
@@ -9601,8 +14749,7 @@ async def process_group_rename(message: types.Message, state: FSMContext, sessio
         await state.update_data(current_group_name=new_name)
         
         # Clear edit state
-        await state.set_state(QuestionFlow.viewing_question)
-        
+        await state.set_state(None)  # Clear state completely instead of setting to viewing_question
         # Show success message
         await message.answer(f"Group successfully renamed from <b>{old_name}</b> to <b>{new_name}</b>.", parse_mode="HTML")
         
@@ -9660,8 +14807,7 @@ async def process_group_description_edit(message: types.Message, state: FSMConte
         logger.info(f"Description of group {group_id} ({group_name}) updated by user {db_user.id}")
         
         # Clear edit state
-        await state.set_state(QuestionFlow.viewing_question)
-        
+        await state.set_state(None)  # Clear state completely instead of setting to viewing_question
         # Show success message
         await message.answer(f"Description of <b>{group_name}</b> has been updated.", parse_mode="HTML")
         
@@ -9802,7 +14948,19 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
     else:
         logger.info(f"Session is available of type {type(session)}, is_active={session.is_active if hasattr(session, 'is_active') else 'unknown'}")
     
-    # Get current group info
+    # Ensure state is active
+    if not state:
+        logger.error("[ERROR] State is None in handle_group_info_message!")
+        await message.answer("An error occurred. Please try /start to restart.")
+        return
+    
+    # Restore state to viewing questions if it\'s not in an active state
+    current_state = await state.get_state()
+    if not current_state:
+        logger.info(f"[DEBUG] Setting state to QuestionFlow.viewing_question for user {message.from_user.id}")
+        await state.set_state(QuestionFlow.viewing_question)
+    
+# Get current group info
     data = await state.get_data()
     logger.info(f"State data: {data}")
     group_id = data.get("current_group_id")
@@ -9812,6 +14970,9 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
         logger.error(f"Missing required data: group_id is None or empty")
         await message.answer("Please select a group first or reconnect to the bot by typing /start.")
         return
+        
+        # Debugging the state issue
+        logger.warning(f"[DEBUG_STATE] User {message.from_user.id} has no current_group_id in state. State data: {data}")
         
     if not session:
         logger.error(f"Session is None, cannot proceed with database operations")
@@ -9904,6 +15065,12 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
             f"<b>Your role:</b> {user_role.capitalize()}"
         ])
         
+        # Generate invite link
+        bot = message.bot
+        payload = f"g{group_id}"
+        invite_link = await create_start_link(bot, payload, encode=True)
+        logger.info(f"Generated invite link for group {group_id}: {invite_link}")
+        
         # Add share info
         if hasattr(group, 'join_code') and group.join_code:
             group_info.extend([
@@ -9911,6 +15078,13 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
                 f"<b>Share code:</b> <code>{group.join_code}</code>",
                 f"You can share this code with others to invite them to this group."
             ])
+
+        # Add invite link
+        group_info.extend([
+            f"",
+            f"<b>Invite link:</b> {invite_link}",
+            f"Share this link to invite others to this group."
+        ])
         
         # Create inline keyboard with management options
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -9952,27 +15126,28 @@ async def handle_group_info_message(message: types.Message, state: FSMContext, s
 
 async def handle_find_match_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
     """Handle the 'Find Match' button from the reply keyboard."""
+    logger.info(f"[DEBUG_MATCH] handle_find_match_message for user {message.from_user.id}, session={session is not None}")
     try:
-        logger.info(f"User {message.from_user.id} pressed Find Match button")
+        logger.info(f"[DEBUG] User {message.from_user.id} pressed Find Match button")
+        logger.info(f"[DEBUG] Session type: {type(session)}")
         
         # Validate session
         if session is None:
-            logger.error("Session is None in handle_find_match_message - this should not happen!")
+            logger.error("[ERROR] Session is None in handle_find_match_message - this should not happen!")
             await message.answer("❌ Database connection error. Please try again later or use /start to restart.")
             return
             
-        logger.info(f"Session type: {type(session)}")
-        
         # Get current data
         data = await state.get_data()
+        logger.info(f"[DEBUG] State data: {data}")
         group_id = data.get("current_group_id")
         
         if not group_id:
-            logger.warning(f"User {message.from_user.id} has no current_group_id in state")
+            logger.warning(f"[WARNING] User {message.from_user.id} has no current_group_id in state")
             await message.answer("Please select a group first.")
             return
         
-        logger.info(f"Finding matches for user {message.from_user.id} in group {group_id}")
+        logger.info(f"[DEBUG] Finding matches for user {message.from_user.id} in group {group_id}")
         
         # Clean up previous messages
         previous_instructions_msg_id = data.get("instructions_msg_id")
@@ -9984,7 +15159,7 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                 try:
                     await message.bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
                 except Exception as e:
-                    logger.warning(f"Failed to delete previous message: {e}")
+                    logger.warning(f"[WARNING] Failed to delete previous message: {e}")
         
         # Clear stored message IDs
         update_data = {
@@ -9993,28 +15168,32 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
             "find_match_msg_id": None
         }
         
-        # Retrieve the user from the database
-        db_user = await user_repo.get_by_telegram_id(session, message.from_user.id)
+        # Get user data
+        user_tg = message.from_user
+        db_user = await user_repo.get_by_telegram_id(session, user_tg.id)
+        
         if not db_user:
-            logger.error(f"User {message.from_user.id} not found in database")
-            await message.answer("❌ Your user profile couldn't be found. Please restart by clicking /start.")
+            logger.error(f"[ERROR] User with Telegram ID {user_tg.id} not found in database")
+            await message.answer("❌ Error: Your user account was not found. Please try /start again.")
             return
         
-        # Check if user has enough points (1 point required)
+        logger.info(f"[DEBUG] Retrieved user: id={db_user.id}, points={db_user.points}")
+        
+        # Check if user has enough points
         if db_user.points < FIND_MATCH_COST:
-            logger.info(f"User {db_user.id} tried to find match but has insufficient points ({db_user.points})")
+            logger.warning(f"[WARNING] User {db_user.id} has insufficient points: {db_user.points} < {FIND_MATCH_COST}")
             await message.answer(
-                f"❌ You need at least {FIND_MATCH_COST} points to find a match. You currently have {db_user.points} points.\n\n"
-                "To earn more points, answer more questions in your group!"
+                f"❌ You need at least {FIND_MATCH_COST} points to find a match. "
+                f"Your current balance is {db_user.points} points."
             )
             return
         
         # Check if user has answered enough questions
         answer_count = await get_answer_count(session, db_user.id, int(group_id))
-        logger.info(f"User {db_user.id} has answered {answer_count} questions in group {group_id}")
+        logger.info(f"[DEBUG] User {db_user.id} has answered {answer_count} questions in group {group_id}")
         
         if answer_count < MIN_QUESTIONS_FOR_MATCH:
-            logger.info(f"User {db_user.id} tried to find match but has only answered {answer_count} questions (min required: {MIN_QUESTIONS_FOR_MATCH})")
+            logger.info(f"[DEBUG] User {db_user.id} tried to find match but has only answered {answer_count} questions")
             await message.answer(
                 f"❌ You need to answer at least {MIN_QUESTIONS_FOR_MATCH} questions to find a match.\n"
                 f"You've currently answered {answer_count} questions."
@@ -10024,34 +15203,25 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
         # Get the group from the database
         group = await group_repo.get(session, int(group_id))
         if not group:
-            logger.error(f"Group {group_id} not found in database")
+            logger.error(f"[ERROR] Group {group_id} not found in database")
             await message.answer("❌ Group not found. Please restart by clicking on the group link.")
             return
         
-        # Get count of other users in the group for logging
-        group_members = await group_repo.get_group_members(session, int(group_id))
-        other_members_count = len([m for m in group_members if m.user_id != db_user.id])
-        logger.info(f"Group {group_id} has {other_members_count} other members besides user {db_user.id}")
-
-        # Find matches first to avoid point deduction if no matches are found
-        # Find matches
-        logger.info(f"Calling find_matches for user {db_user.id} in group {group_id}")
+        logger.info(f"[DEBUG] Retrieved group: id={group.id}, name={group.name}")
+        
         try:
+                        # Store original points for error recovery
+            old_points = db_user.points
+            
+            # Find matches first to avoid point deduction if no matches are found
+            logger.info(f"[DEBUG] Calling find_matches for user {db_user.id} in group {group_id}")
             match_results = await find_matches(session, db_user.id, int(group_id))
-            logger.info(f"Found {len(match_results)} potential matches for user {db_user.id} in group {group_id}")
-        except Exception as match_error:
-            logger.error(f"Error in find_matches call: {str(match_error)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.info(f"[DEBUG] Match results count: {len(match_results) if match_results else 0}")
             
-            await message.answer("❌ An error occurred while finding matches. Please try again later.")
-            await show_group_menu(message, group_id, group.name, state, session=session)
-            return
-        if not match_results or len(match_results) == 0:
-            # No matches found - no need to deduct points
-            logger.info(f"No matches found for user {db_user.id} in group {group_id}")
-            
-            try:
+            if not match_results or len(match_results) == 0:
+                # No matches found - no need to deduct points
+                logger.info(f"[DEBUG] No matches found for user {db_user.id} in group {group_id}")
+                
                 # Send no matches message
                 await message.answer(
                     "😔 No matches found at this time. Please try again later when more group members have answered questions."
@@ -10059,281 +15229,196 @@ async def handle_find_match_message(message: types.Message, state: FSMContext, s
                 
                 # Show group menu to maintain context
                 await show_group_menu(message, group_id, group.name, state, session=session)
-            except Exception as menu_error:
-                logger.error(f"Error showing group menu after no matches: {menu_error}")
-                await message.answer("Please use /start to return to the main menu.")
+                return
             
-            return
-        
-        # Deduct points from the initiating user - only now that we know there are matches
-        old_points = db_user.points
-        db_user.points -= FIND_MATCH_COST
-        session.add(db_user)
-        await session.commit()
-        logger.info(f"Deducted {FIND_MATCH_COST} points from user {db_user.id}, new balance: {db_user.points} (was {old_points})")
-        
-        # We already have match results, no need to find matches again
-        if not match_results or len(match_results) == 0:
-            # No matches found
-            logger.info(f"No matches found for user {db_user.id} in group {group_id}")
-            
-            # Refund points since no matches were found
-            db_user.points += FIND_MATCH_COST
+            # Deduct points from the initiating user - only now that we know there are matches
+            db_user.points -= FIND_MATCH_COST
             session.add(db_user)
             await session.commit()
-            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to no matches, new balance: {db_user.points}")
+            logger.info(f"[DEBUG] Deducted {FIND_MATCH_COST} points from user {db_user.id}, new balance: {db_user.points} (was {old_points})")
+            logger.info(f"[DEBUG] Match results count: {len(match_results) if match_results else 0}")
             
-            try:
-                # Send no matches message
-                await message.answer(
-                    "😔 No matches found at this time. Please try again later when more group members have answered questions."
-                )
+            if not match_results or len(match_results) == 0:
+                # No matches found
+                logger.info(f"[DEBUG] No matches found for user {db_user.id} in group {group_id}")
                 
-                # Show group menu to maintain context
-                await show_group_menu(message, group_id, group.name, state, session=session)
-            except Exception as menu_error:
-                logger.error(f"Error showing group menu after no matches: {menu_error}")
-                await message.answer("Please use /start to return to the main menu.")
-            
-            return
-        
-        # Get the top match
-        matched_user_id, cohesion_score, common_questions, category_scores, category_counts = match_results[0]
-        logger.info(f"Found match: user {matched_user_id} with cohesion score {cohesion_score:.2f}, {common_questions} common questions")
-        
-        # Store match data in state for callbacks to use
-        update_data.update({
-            "matched_user_id": matched_user_id,
-            "cohesion_score": cohesion_score,
-            "common_questions": common_questions,
-            "category_scores": category_scores,
-            "category_counts": category_counts,
-            "current_group_id": int(group_id),  # Ensure group_id is always set
-            "current_group_name": group.name    # Ensure group_name is always set
-        })
-        
-        # Get the matched user from the database
-        matched_db_user = await user_repo.get(session, matched_user_id)
-        if not matched_db_user:
-            logger.error(f"Could not find matched user with ID {matched_user_id} in database")
-            
-            # Refund points due to error
-            db_user.points += FIND_MATCH_COST
-            session.add(db_user)
-            await session.commit()
-            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
-            
-            await message.answer("❌ An error occurred while retrieving your match information.")
-            await show_group_menu(message, group_id, group.name, state, session=session)
-            return
-        
-        logger.info(f"Found matched user in database: ID={matched_db_user.id}, Telegram ID={matched_db_user.telegram_id}")
-        
-        # Format the cohesion score as a percentage
-        cohesion_percentage = int(cohesion_score * 100)
-        
-        # Prepare the match confirmation message
-        confirmation_text = (
-            f"🎉 <b>We found you a match with a team member!</b>\n\n"
-            f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
-            f"You share perspectives on <b>{common_questions} questions</b>.\n\n"
-        )
-        
-        # Add category breakdown if available
-        if category_scores:
-            confirmation_text += "<b>Category Breakdown:</b>\n"
-            for category, cat_score in category_scores.items():
-                cat_percentage = int(cat_score * 100)  # Convert cohesion score to percentage
-                question_count = category_counts.get(category, 0)
-                confirmation_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
-            confirmation_text += "\n"
-        
-        # Add hidden group ID for context recovery if needed
-        # Removed HTML tag that caused Telegram errors
-        # confirmation_text += f\"<span class='hidden'>group_id:{group_id}</span>\"
-        
-        # Try to get the nickname and photo for the matched user
-        matched_user_nickname = None
-        matched_user_photo = None
-        
-        try:
-            # Get the group member record for the matched user
-            logger.info(f"Fetching group member data for matched user {matched_user_id} in group {group_id}")
-            
-            # Log database connection info
-            logger.info(f"Database session valid: {session is not None}")
-            
-            matched_group_member = await group_repo.get_group_member(session, matched_user_id, int(group_id))
-            
-            if matched_group_member:
-                logger.info(f"Found group member record for user {matched_user_id}: {matched_group_member}")
-                matched_user_nickname = getattr(matched_group_member, "nickname", None)
-                matched_user_photo = getattr(matched_group_member, "photo_file_id", None)
-                logger.info(f"Retrieved nickname: '{matched_user_nickname}' and photo ID: '{matched_user_photo}'")
+                # Refund points since no matches were found
+                db_user.points += FIND_MATCH_COST
+                session.add(db_user)
+                await session.commit()
+                logger.info(f"[DEBUG] Refunded {FIND_MATCH_COST} points to user {db_user.id} due to no matches, new balance: {db_user.points}")
                 
-                # Store nickname and photo in state
-                update_data["matched_user_nickname"] = matched_user_nickname
-                update_data["matched_user_photo"] = matched_user_photo
-                
-                # Add the nickname to the confirmation text if available
-                if matched_user_nickname:
-                    logger.info(f"Adding nickname '{matched_user_nickname}' to confirmation text")
-                    confirmation_text = confirmation_text.replace("with a team member", f"with <b>{matched_user_nickname}</b>")
-                else:
-                    logger.warning(f"No nickname found for matched user {matched_user_id}")
-            else:
-                logger.warning(f"No group member record found for matched user {matched_user_id} in group {group_id}")
-        except Exception as e:
-            logger.error(f"Error retrieving nickname/photo for matched user: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            # Continue without nickname/photo
-        
-        # Check if there is an existing match record
-        existing_match = await get_match(session, db_user.id, matched_user_id, int(group_id))
-        
-        # Check if there is an existing chat session
-        existing_chat = await get_chat_by_participants(
-            session, db_user.id, matched_user_id, int(group_id)
-        )
-        
-        # If no existing match or chat, create a new match record
-        if not existing_match:
-            match_record = Match(
-                user1_id=db_user.id,
-                user2_id=matched_user_id,
-                group_id=int(group_id),
-                score=cohesion_score,
-                common_questions=common_questions,
-                created_at=datetime.now()
-            )
-            session.add(match_record)
-            await session.commit()
-            logger.info(f"Created new match record for users {db_user.id} and {matched_user_id} in group {group_id}")
-        else:
-            logger.info(f"Using existing match record between users {db_user.id} and {matched_user_id}")
-        
-        # Create keyboard with the Start Chat button
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(
-                text="🗣 Start Anonymous Chat",
-                callback_data=f"start_anon_chat:{matched_user_id}"
-            )],
-            [types.InlineKeyboardButton(
-                text="❌ Cancel",
-                callback_data="cancel_match"
-            )]
-        ])
-        
-        # Add notice about points being deducted
-        confirmation_text += f"👉 <b>{FIND_MATCH_COST} points</b> have been deducted from your account for this match.\n\n"
-        confirmation_text += "Click the button below to start an anonymous chat with your match. Your identity will remain hidden until you choose to reveal it."
-        
-        # Log what we're about to put in state
-        logger.info(f"About to update state with: {update_data}")
-        
-        # Send the message with the matched user's photo if available
-        sent_message = None
-        if matched_user_photo:
-            try:
-                logger.info(f"Sending match confirmation with photo ID: {matched_user_photo}")
-                match_msg = await message.answer_photo(
-                    photo=matched_user_photo,
-                    caption=confirmation_text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-                update_data["find_match_msg_id"] = match_msg.message_id
-                sent_message = match_msg
-            except Exception as e:
-                logger.error(f"Error sending matched user photo: {str(e)}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                # Fall back to text-only message
                 try:
+                    # Send no matches message
+                    await message.answer(
+                        "😔 No matches found at this time. Please try again later when more group members have answered questions."
+                    )
+                    
+                    # Show group menu to maintain context
+                    await show_group_menu(message, group_id, group.name, state, session=session)
+                except Exception as menu_error:
+                    logger.error(f"[ERROR] Error showing group menu after no matches: {menu_error}")
+                    await message.answer("Please use /start to return to the main menu.")
+                
+                return
+            
+            # Get the top match
+            matched_user_id, cohesion_score, common_questions, category_scores, category_counts = match_results[0]
+            logger.info(f"[DEBUG] Found match: user {matched_user_id} with cohesion score {cohesion_score:.2f}, {common_questions} common questions")
+            
+            # Store match data in state for callbacks to use
+            update_data.update({
+                "matched_user_id": matched_user_id,
+                "cohesion_score": cohesion_score,
+                "common_questions": common_questions,
+                "category_scores": category_scores,
+                "category_counts": category_counts,
+                "current_group_id": int(group_id),  # Ensure group_id is always set
+                "current_group_name": group.name    # Ensure group_name is always set
+            })
+            
+            # Get the matched user from the database
+            matched_db_user = await user_repo.get(session, matched_user_id)
+            if not matched_db_user:
+                logger.error(f"[ERROR] Could not find matched user with ID {matched_user_id} in database")
+                
+                # Refund points due to error
+                db_user.points += FIND_MATCH_COST
+                session.add(db_user)
+                await session.commit()
+                logger.info(f"[DEBUG] Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+                
+                await message.answer("❌ An error occurred while retrieving your match information.")
+                await show_group_menu(message, group_id, group.name, state, session=session)
+                return
+            
+            logger.info(f"[DEBUG] Found matched user in database: ID={matched_db_user.id}, Telegram ID={matched_db_user.telegram_id}")
+            
+            # Format the cohesion score as a percentage
+            cohesion_percentage = int(cohesion_score * 100)
+            
+            # Prepare the match confirmation message
+            confirmation_text = (
+                f"🎉 <b>We found you a match with a team member!</b>\n\n"
+                f"<b>Cohesion Score: {cohesion_percentage}%</b>\n"
+                f"You share perspectives on <b>{common_questions} questions</b>.\n\n"
+            )
+            
+            # Add category breakdown if available
+            if category_scores:
+                confirmation_text += "<b>Category Breakdown:</b>\n"
+                for category, cat_score in category_scores.items():
+                    cat_percentage = int(cat_score * 100)  # Convert cohesion score to percentage
+                    question_count = category_counts.get(category, 0)
+                    confirmation_text += f"• <b>{category.title()}</b>: {cat_percentage}% ({question_count} questions)\n"
+                confirmation_text += "\n"
+            
+            # Add hidden group ID for context recovery if needed
+            # Removed HTML tag that caused Telegram errors
+        # confirmation_text += f\"<span class='hidden'>group_id:{group_id}</span>\"
+            
+            # Get nickname and photo for the matched user
+            try:
+                member = await group_repo.get_group_member(session, matched_user_id, int(group_id))
+                matched_user_nickname = member.nickname if member and member.nickname else None
+                matched_user_photo = member.photo_file_id if member and member.photo_file_id else None
+                
+                logger.info(f"[DEBUG] Matched user nickname: {matched_user_nickname}, has photo: {matched_user_photo is not None}")
+                
+                # Add nickname information if available
+                if matched_user_nickname:
+                    confirmation_text = confirmation_text.replace(
+                        "<b>We found you a match with a team member!</b>",
+                        f"<b>We found you a match with {matched_user_nickname}!</b>"
+                    )
+            except Exception as e:
+                logger.warning(f"[WARNING] Error getting nickname for matched user {matched_user_id}: {e}")
+                matched_user_nickname = None
+                matched_user_photo = None
+            
+            # Create match buttons
+            keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(
+                    text="💬 Start Anonymous Chat",
+                    callback_data=f"start_anon_chat:{matched_user_id}"
+                )],
+                [types.InlineKeyboardButton(
+                    text="Cancel",
+                    callback_data="cancel_match"
+                )]
+            ])
+            
+            # Send the match confirmation message
+            if matched_user_photo:
+                try:
+                    logger.info(f"[DEBUG] Sending match confirmation with photo {matched_user_photo}")
+                    match_msg = await message.answer_photo(
+                        photo=matched_user_photo,
+                        caption=confirmation_text,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                    
+                    # Store message ID for future reference
+                    update_data["find_match_msg_id"] = match_msg.message_id
+                except Exception as photo_error:
+                    logger.error(f"[ERROR] Error sending photo message: {photo_error}")
+                    # Fallback to text-only message
                     match_msg = await message.answer(
-                        text=confirmation_text,
+                        confirmation_text,
                         reply_markup=keyboard,
                         parse_mode="HTML"
                     )
                     update_data["find_match_msg_id"] = match_msg.message_id
-                    sent_message = match_msg
-                except Exception as e2:
-                    logger.error(f"Error sending text fallback: {str(e2)}")
-                    raise
-        else:
-            # Send text-only message if no photo is available
-            logger.info("No photo available, sending text-only match confirmation")
-            try:
+            else:
+                logger.info(f"[DEBUG] Sending text-only match confirmation")
                 match_msg = await message.answer(
-                    text=confirmation_text,
+                    confirmation_text,
                     reply_markup=keyboard,
                     parse_mode="HTML"
                 )
                 update_data["find_match_msg_id"] = match_msg.message_id
-                sent_message = match_msg
-            except Exception as e:
-                logger.error(f"Error sending text message: {str(e)}")
-                raise
-        
-        if not sent_message:
-            logger.error("Failed to send match confirmation message")
             
-            # Refund points due to error
-            db_user.points += FIND_MATCH_COST
-            session.add(db_user)
-            await session.commit()
-            logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
+            # Update state with match information
+            await state.update_data(update_data)
+            logger.info(f"[DEBUG] Match confirmation sent to user {db_user.id} for match with user {matched_user_id}")
             
-            await message.answer("❌ An error occurred while sending match information.")
-            return
-        
-        # Update state data
-        await state.update_data(**update_data)
-        
-        # Log that we've updated state
-        logger.info(f"Updated state data for user {db_user.id} with match information")
-        
-        # Get the current state data to verify
-        verification_data = await state.get_data()
-        logger.info(f"Current state data: matched_user_id={verification_data.get('matched_user_id')}, "
-                   f"cohesion_score={verification_data.get('cohesion_score')}, "
-                   f"current_group_id={verification_data.get('current_group_id')}")
-    except Exception as e:
-        logger.error(f"Error in handle_find_match_message: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Safely attempt to refund points
-        try:
-            # Only refund if we have valid db_user
-            if 'db_user' in locals() and db_user:
-                db_user.points += FIND_MATCH_COST
-                session.add(db_user)
-                await session.commit()
-                logger.info(f"Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error, new balance: {db_user.points}")
-        except Exception as e2:
-            logger.error(f"Failed to refund points: {e2}")
-        
-        # Send a single error message rather than potentially sending two
-        if not 'no_matches_sent' in locals() or not locals()['no_matches_sent']:
+            # Create match record in database
             try:
-                await message.answer("❌ An error occurred while finding a match. Please try again later.")
-            except Exception as e3:
-                logger.error(f"Failed to send error message: {e3}")
-        
-        # Safely attempt to show group menu
-        try:
-            # Only try to show menu if we have valid group data
-            if 'group' in locals() and group and 'group_id' in locals() and group_id:
-                await show_group_menu(message, group_id, group.name, state, session=session)
-        except Exception as e3:
-            logger.error(f"Failed to show group menu: {e3}")
-            # Try a simple fallback
+                from src.db.repositories.match_repo import create_match
+                await create_match(
+                    session,
+                    db_user.id,  # User who initiated the match search
+                    matched_user_id,  # Their matched user
+                    int(group_id),
+                    cohesion_score,
+                    common_questions
+                )
+                logger.info(f"[DEBUG] Match record created in database")
+            except Exception as db_error:
+                logger.error(f"[ERROR] Error creating match record in database: {db_error}")
+                # Not critical - continue without creating record
+            
+        except Exception as e:
+            logger.exception(f"[ERROR] Error in find_match process: {e}")
+            
+            # Attempt to refund points if deducted
             try:
-                await message.answer("Use /start to return to the main menu.")
-            except:
-                pass
+                # Check if points were actually deducted (we might have already refunded)
+                current_user = await user_repo.get(session, db_user.id)
+                if current_user and current_user.points < old_points:
+                    current_user.points += FIND_MATCH_COST
+                    session.add(current_user)
+                    await session.commit()
+                    logger.info(f"[DEBUG] Refunded {FIND_MATCH_COST} points to user {db_user.id} due to error")
+            except Exception as refund_error:
+                logger.error(f"[ERROR] Failed to refund points to user {db_user.id}: {refund_error}")
+            
+            # Send error message
+            await message.answer("❌ An error occurred while finding a match. Please try again.")
+    except Exception as outer_e:
+        logger.exception(f"[ERROR] Unhandled exception in handle_find_match_message: {outer_e}")
+        await message.answer("❌ An unexpected error occurred. Please try again or use /start to restart.")
 
 
 async def handle_add_question_message(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
@@ -10345,18 +15430,48 @@ async def handle_add_question_message(message: types.Message, state: FSMContext,
 
 
 # Add this debugging helper function at the top of the file
-async def debug_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession = None) -> None:
-    """Debug handler that catches all unhandled callback queries."""
+
+async def debug_callback(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    '''Handle debug callbacks and redirect to appropriate handlers.'''    # Special handling for load_answered_questions
+    if callback.data == "load_answered_questions":
+            logger.info(f"Debug callback handling load_answered_questions for user {callback.from_user.id}")
+            try:
+                # Import here to avoid circular imports
+                from src.bot.handlers.load_answered_questions import on_load_answered_questions
+                await on_load_answered_questions(callback, state, session)
+                return
+            except Exception as e:
+                logger.error(f"Error in load_answered_questions handler: {e}", exc_info=True)
+                await callback.answer("Error loading your answers. Please try again.", show_alert=True)
+                return
+            
+
+    # Log debug info
+    logger.info(f"Debug callback received: {callback.data}")
+    
+    # Special handling for load_answered_questions
+    if callback.data == "load_answered_questions":
+        logger.info(f"Debug callback handling load_answered_questions for user {callback.from_user.id}")
+        try:
+            # Import here to avoid circular imports
+            from src.bot.handlers.load_answered_questions import on_load_answered_questions
+            await on_load_answered_questions(callback, state, session)
+            return
+        except Exception as e:
+            logger.error(f"Error in on_load_answered_questions handler: {e}", exc_info=True)
+            await callback.answer("Error loading your answers. Please try again.", show_alert=True)
+            return
+    
     try:
-        # Log the unhandled callback
+        # For other unhandled callbacks
         logger.warning(f"Unhandled callback data: '{callback.data}' from user {callback.from_user.id}")
         
-        # Log the state data
+        # Log state data for debugging
         state_data = await state.get_data()
         logger.warning(f"Current state data: {state_data}")
         logger.warning(f"Current state: {await state.get_state()}")
         
-        # Get user info
+        # Get user info for debugging
         user_info = f"ID: {callback.from_user.id}, Username: @{callback.from_user.username}"
         logger.warning(f"User info: {user_info}")
         
@@ -10368,7 +15483,7 @@ async def debug_callback(callback: types.CallbackQuery, state: FSMContext, sessi
                 message_info += f", Text: '{message_text}'"
             logger.warning(f"Message info: {message_info}")
         
-        # For group-related callbacks, try to extract the group ID
+        # For group-related callbacks, try to extract group ID
         group_id = None
         if ":" in callback.data:
             parts = callback.data.split(":")
@@ -10378,11 +15493,11 @@ async def debug_callback(callback: types.CallbackQuery, state: FSMContext, sessi
             except (ValueError, IndexError):
                 pass
         
-        # Check if this callback might be for a group action
+        # Check if callback might be for a group action
         if any(callback.data.startswith(prefix) for prefix in ["manage_group", "leave_group", "go_to_group"]):
             logger.warning(f"This appears to be a group-related callback: {callback.data}")
             
-            # If we have a session and group_id, try to get the group info
+            # Try to get group info
             if session and group_id:
                 try:
                     group = await group_repo.get(session, group_id)
@@ -10393,10 +15508,10 @@ async def debug_callback(callback: types.CallbackQuery, state: FSMContext, sessi
                 except Exception as e:
                     logger.exception(f"Error retrieving group info: {e}")
         
-        # Acknowledge the callback to prevent the "loading" state
+        # Acknowledge callback to stop loading state
         await callback.answer("This action is not currently available", show_alert=True)
         
-        # If we're in a development environment, send a debug message
+        # Send debug message in development environment
         is_dev = not os.environ.get("RAILWAY_ENVIRONMENT")
         if is_dev:
             await callback.message.answer(
@@ -10410,7 +15525,6 @@ async def debug_callback(callback: types.CallbackQuery, state: FSMContext, sessi
             await callback.answer("An error occurred processing your request", show_alert=True)
         except:
             pass
-
 async def echo_debug_handler(message: types.Message, state: FSMContext) -> None:
     """Debug handler to echo text messages and log state."""
     logger.info(f"ECHO DEBUG: Received text '{message.text}' from user {message.from_user.id}")
@@ -10430,7 +15544,12 @@ async def echo_debug_handler(message: types.Message, state: FSMContext) -> None:
 
 async def handle_direct_question_entry(message: types.Message, state: FSMContext, session: AsyncSession = None) -> None:
     """Handle direct question entry from user (a message that ends with a question mark)."""
-    logger.info(f"Direct question entry detected: '{message.text}' from user {message.from_user.id}")
+    logger.info(f"Direct question entry detected: \'{message.text}\' from user {message.from_user.id}")
+    
+    # Add debugging for non-expected inputs
+    menu_buttons = ["Find Match", "Group Info", "Instructions", "💬 Questions", "➕ Add Question", "🏠 Start Menu"]
+    if message.text and message.text.strip() in menu_buttons:
+        logger.warning(f"[CRITICAL] Menu button \'{message.text}\' treated as direct question! This should not happen.")
     
     if not session:
         logger.error("No database session provided to handle_direct_question_entry")
@@ -10442,15 +15561,68 @@ async def handle_direct_question_entry(message: types.Message, state: FSMContext
     group_id = data.get("current_group_id")
     group_name = data.get("current_group_name")
     
-    # If user is not in a group context, we can't process the question
+    # If user is not in a group context, automatically find or create a group
     if not group_id or not group_name:
-        logger.info(f"User {message.from_user.id} tried to add question but not in a group context")
-        await message.reply("Please join or select a group first before adding questions.")
-        return
+        logger.info(f"User {message.from_user.id} tried to add question but not in a group context, finding a group")
+        
+        # Get user from DB
+        user_tg = message.from_user
+        db_user, _ = await user_repo.get_or_create_user(session, {
+            "id": user_tg.id,
+            "first_name": user_tg.first_name,
+            "last_name": user_tg.last_name,
+            "username": user_tg.username
+        })
+        
+        # Check if user belongs to any groups
+        user_groups = await group_repo.get_user_groups(session, db_user.id)
+        
+        if user_groups:
+            # User already has groups, use the first one
+            group = user_groups[0]
+            group_id = group.id
+            group_name = group.name
+            logger.info(f"Auto-selecting existing group {group_id} ({group_name}) for user {db_user.id}")
+        else:
+            # User has no groups, check for public groups
+            public_groups = await group_repo.get_public_groups(session)
+            
+            if public_groups:
+                # Join the first public group
+                group = public_groups[0]
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Added user {db_user.id} to public group {group_id} ({group_name})")
+            else:
+                # Create a new public "General" group if none exists
+                group = await group_repo.create_group(
+                    session=session,
+                    name="General",
+                    description="Default group for all users",
+                    created_by=db_user.id,
+                    is_public=True
+                )
+                await group_repo.add_user_to_group(session, db_user.id, group.id)
+                group_id = group.id
+                group_name = group.name
+                logger.info(f"Created new public group {group_id} ({group_name}) for user {db_user.id}")
+        
+        # Update state with the group context
+        await state.update_data(current_group_id=group_id, current_group_name=group_name)
+        
+        # Ensure question text is preserved when updating state
+        await state.update_data(new_question_text=question_text)
+        
+        # Inform the user they've been added to a group
+        # Group message removed to keep chat clean
+        logger.info(f"User {message.from_user.id} auto-added to group {group_id} ({group_name}), suppressing notification")
     
     # Set state for question creation
     await state.set_state(QuestionFlow.creating_question)
     question_text = message.text.strip()
+    # Make sure the correct question text is stored in state
+    await state.update_data(new_question_text=question_text)
     
     # Show waiting message while checking with OpenAI
     waiting_msg = await message.reply("Processing your question, please wait...")
