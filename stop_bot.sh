@@ -1,27 +1,53 @@
 #!/bin/bash
-echo "Stopping bot and cleaning up..."
 
-# Find bot process
-BOT_PID=$(ps aux | grep "python run.py" | grep -v grep | awk '{print $2}')
+echo "=== Stopping bot instances ==="
 
-if [ -n "$BOT_PID" ]; then
-    echo "Found bot process (PID: $BOT_PID), terminating..."
-    kill -15 $BOT_PID
-    sleep 2
-    
-    # Check if process is still running
-    if ps -p $BOT_PID > /dev/null; then
-        echo "Process didn't terminate gracefully, forcing..."
-        kill -9 $BOT_PID
-    fi
-    
-    echo "Bot terminated successfully"
+# Kill processes using the bot's port
+echo "Checking for processes using port 8081..."
+PORT_PIDS=$(lsof -i :8081 | grep -v PID | awk '{print $2}')
+if [ -n "$PORT_PIDS" ]; then
+    echo "Stopping processes using port 8081: $PORT_PIDS"
+    echo $PORT_PIDS | xargs kill -15
+    echo "Processes stopped."
 else
-    echo "No running bot process found"
+    echo "No processes found using port 8081."
 fi
 
-# Reset webhook
-echo "Resetting webhook..."
-curl -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteWebhook?drop_pending_updates=true"
+# Kill Python processes running src.main
+echo "Checking for Python processes running src.main..."
+PYTHON_PIDS=$(ps aux | grep "python -m src.main" | grep -v grep | awk '{print $2}')
+if [ -n "$PYTHON_PIDS" ]; then
+    echo "Stopping Python processes: $PYTHON_PIDS"
+    echo $PYTHON_PIDS | xargs kill -15
+    echo "Processes stopped."
+else
+    echo "No Python processes found running src.main."
+fi
 
-echo "Cleanup complete" 
+# If a PID file exists, use it
+if [ -f "bot.pid" ]; then
+    echo "Found bot.pid file..."
+    PID=$(cat bot.pid)
+    if ps -p $PID > /dev/null; then
+        echo "Stopping bot with PID $PID"
+        kill -15 $PID
+        sleep 2
+        if ps -p $PID > /dev/null; then
+            echo "Bot didn't stop gracefully, forcing termination..."
+            kill -9 $PID
+        fi
+        echo "Bot stopped."
+    else
+        echo "Bot with PID $PID is not running."
+    fi
+    rm -f bot.pid
+fi
+
+# Remove lock file if it exists
+if [ -f "bot.lock" ]; then
+    echo "Removing bot.lock file..."
+    rm -f bot.lock
+    echo "Lock file removed."
+fi
+
+echo "=== Bot has been stopped ===" 

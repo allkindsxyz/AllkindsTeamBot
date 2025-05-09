@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Tuple, Union
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, func, text
+from sqlalchemy import select, update, delete, func, text, exists
 from sqlalchemy.future import select as future_select
 
 from src.db.models import Group, Question
@@ -32,6 +32,31 @@ class GroupRepository(BaseRepository[Group]):
         await session.commit()
         await session.refresh(group)
         return group
+        
+    async def create_group(self, session: AsyncSession, name: str, description: str, created_by: int, is_public: bool = False) -> Group:
+        """Create a new group with the specified details.
+        
+        Args:
+            session: Database session
+            name: Name of the group
+            description: Description of the group
+            created_by: ID of the user creating the group
+            is_public: Whether the group is public or private
+            
+        Returns:
+            The created Group object
+        """
+        # Create group data dictionary
+        group_data = {
+            "name": name,
+            "description": description,
+            "creator_id": created_by,
+            "is_private": not is_public,  # is_private is the opposite of is_public
+            "is_active": True
+        }
+        
+        # Use the base create method to create the group
+        return await self.create(session, group_data)
         
     async def get_user_groups(self, session: AsyncSession, user_id: int) -> list[Group]:
         """Get all groups a user belongs to (including as creator or member)."""

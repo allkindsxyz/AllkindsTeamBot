@@ -6,10 +6,10 @@ alwaysApply: true
 We are developing a service that connects people based on shared values.
 
 How It Works:
-Users ask yes/no questions, answer their own questions, and respond to those from others. There are four response options: Strong No, No, Yes, and Strong Yes. Cohesion is calculated on similar answers.
+Users ask yes/no questions, answer their own questions, and respond to those from others. There are four response options: Strong No, No, Yes, and Strong Yes. Cohesion is calculated on similarity of answers.
 
 Interaction & Accessibility:
-The primary interface is a Telegram bot, enabling users to engage seamlessly.
+There are two bots in the service - the main bot connects people, the chat bot - allows users to chat anonymousely and exchange real contacts.
 
 Some features will also be available via a web platform.
 

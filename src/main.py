@@ -11,6 +11,7 @@ import signal
 import subprocess
 from loguru import logger
 import time
+from dotenv import load_dotenv
 
 # Configure logging
 log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -21,8 +22,17 @@ logger.add("logs/allkinds_bot_{time}.log", rotation="10 MB", level="DEBUG")
 
 # Import must be done after logging setup
 from src.bot.main import start_bot as start_main_bot
-from src.communicator_bot.main import start_communicator_bot
 from src.core.config import get_settings
+
+# Force load .env and override any existing OS env vars from it for this process
+# This also helps if Pydantic's BaseSettings didn't pick it up or used a cached version.
+if load_dotenv(override=True, verbose=True):
+    logger.info(".env file loaded successfully by explicit call in main.py")
+else:
+    logger.warning(".env file NOT loaded by explicit call in main.py, or it was empty.")
+
+import os # ensure os is imported after dotenv load for this check
+logger.info(f"MAIN.PY CHECK: BOT_TOKEN from os.environ: {os.environ.get('BOT_TOKEN')}")
 
 # Signal handler for graceful shutdown
 async def shutdown(signal_name=None):
@@ -102,8 +112,6 @@ async def main():
     logger.info("Checking environment variables:")
     env_vars = {
         "BOT_TOKEN": bool(os.environ.get("BOT_TOKEN")),
-        "COMMUNICATOR_BOT_TOKEN": bool(os.environ.get("COMMUNICATOR_BOT_TOKEN")),
-        "COMMUNICATOR_BOT_USERNAME": os.environ.get("COMMUNICATOR_BOT_USERNAME", "Not set"),
         "WEBHOOK_HOST": os.environ.get("WEBHOOK_HOST", "Not set"),
         "RAILWAY_PUBLIC_DOMAIN": os.environ.get("RAILWAY_PUBLIC_DOMAIN", "Not set"),
         "RAILWAY_ENVIRONMENT": os.environ.get("RAILWAY_ENVIRONMENT", "Not set"),
@@ -121,9 +129,7 @@ async def main():
     
     # Set environment variables for children processes
     # Force polling mode
-os.environ["USE_WEBHOOK"] = "false"
-
-
+    os.environ["USE_WEBHOOK"] = "false"
     os.environ["WEBHOOK_PATH"] = "/webhook"
     
     # Start health check in a separate task
@@ -136,23 +142,45 @@ os.environ["USE_WEBHOOK"] = "false"
         logger.info("Starting Allkinds Team Bot...")
         main_bot_task = asyncio.create_task(start_main_bot())
         
-        # Start the communicator bot in a separate task
-        logger.info("Starting Communicator Bot...")
-        communicator_bot_task = asyncio.create_task(start_communicator_bot())
-        
-        # Wait for both tasks to complete
-        await asyncio.gather(main_bot_task, communicator_bot_task)
+        # Wait for main task to complete
+        await main_bot_task
     except Exception as e:
         logger.exception(f"Unhandled exception: {e}")
     finally:
-        # Cancel health check task
-        health_task.cancel()
-        try:
-            await health_task
-        except asyncio.CancelledError:
-            pass
+        logger.info("Initiating shutdown sequence...")
+
+        # Cancel bot tasks
+        if 'main_bot_task' in locals() and not main_bot_task.done():
+            logger.info("Cancelling main_bot_task...")
+            main_bot_task.cancel()
         
-        logger.info("All bots shutdown complete")
+        # Wait for bot tasks to finish their cleanup (with a timeout)
+        if 'main_bot_task' in locals():
+            logger.info("Waiting for bot tasks to complete cancellation...")
+            try:
+                await asyncio.wait(
+                    [main_bot_task],
+                    timeout=10.0  # Adjust timeout as needed
+                )
+                logger.info("Bot tasks completed cancellation.")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for bot tasks to cancel. They might not have shut down cleanly.")
+            except Exception as ex:
+                logger.error(f"Exception during bot task cancellation wait: {ex}")
+        
+        # Cancel health check task
+        if 'health_task' in locals() and not health_task.done():
+            logger.info("Cancelling health_task...")
+            health_task.cancel()
+            try:
+                await health_task
+                logger.info("Health_task cancelled.")
+            except asyncio.CancelledError:
+                logger.info("Health_task confirmed cancelled.")
+            except Exception as ex:
+                logger.error(f"Exception during health_task cancellation: {ex}")
+        
+        logger.info("All bots shutdown sequence complete.")
 
 if __name__ == "__main__":
     # Run the main function

@@ -1,4 +1,5 @@
 import logging
+import os
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 import aiohttp
@@ -12,8 +13,11 @@ settings = get_settings()
 async def reset_webhook(bot: Bot):
     """Reset the webhook with robust error handling and retries."""
     webhook_url = f"{settings.WEBHOOK_HOST}{settings.WEBHOOK_PATH}"
-    logger.info(f"Resetting webhook to: {webhook_url}")
-    logger.info(f"Webhook mode is {'enabled' if settings.USE_WEBHOOK else 'disabled'}")
+    logger.info(f"Resetting webhook to: {settings.WEBHOOK_PATH}")
+    
+    # Check webhook mode from environment
+    use_webhook = os.environ.get("USE_WEBHOOK", "false").lower() == "true"
+    logger.info(f"Webhook mode is {'enabled' if use_webhook else 'disabled'}")
     
     # Simple retry mechanism
     max_tries = 5
@@ -61,7 +65,7 @@ async def reset_webhook(bot: Bot):
                 logger.warning(f"Could not verify webhook deletion: {e}")
             
             # Then set the new webhook if needed
-            if settings.USE_WEBHOOK:
+            if use_webhook:
                 try:
                     logger.info(f"Setting webhook to {webhook_url}...")
                     await bot.set_webhook(

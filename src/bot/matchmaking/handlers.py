@@ -67,3 +67,18 @@ async def process_start_communication(
     session.add(new_request)
     await session.commit()
     await callback.message.answer("A chat invitation is already pending. Please wait for the other person to join.")
+
+async def get_or_create_communicator_invite(initiator_id: int, receiver_id: int) -> str:
+    """
+    Generate a deep link to the chat bot.
+    
+    Args:
+        initiator_id: ID of the initiator user
+        receiver_id: ID of the receiver user
+        
+    Returns:
+        str: URL of the chat bot invite
+    """
+    # This function has been moved to the chat bot project
+    # For now, return a placeholder message
+    return "Chat functionality has been moved to a separate bot. Please update your integration."

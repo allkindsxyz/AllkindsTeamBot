@@ -19,7 +19,7 @@ settings = get_settings()
 IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
 
 # Prioritize Railway's DATABASE_URL environment variable
-ORIGINAL_DB_URL = os.getenv('DATABASE_URL', settings.db_url)
+ORIGINAL_DB_URL = os.getenv('DATABASE_URL', settings.DB_URL)
 logger.info(f"Original database URL type: {type(ORIGINAL_DB_URL)}")
 
 # Function to safely process database URL
@@ -112,7 +112,7 @@ class Base(DeclarativeBase):
 
 
 # Set connect_args based on database type
-connect_args = {}
+connect_args = {}  # Default to empty for SQLite
 if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
     # PostgreSQL specific connect args for asyncpg with more generous timeouts for Railway
     connect_args = {
@@ -127,15 +127,14 @@ if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_
     
     # Add SSL mode for Railway deployment
     if IS_RAILWAY:
-        logger.info("Running on Railway, configuring SSL parameters")
-        # Use prefer mode without the context - this is what asyncpg supports
+        logger.info("Running on Railway, configuring SSL parameters for global engine")
         connect_args["ssl"] = "prefer"
-        logger.info("Configured SSL parameters: prefer mode")
+        logger.info("Configured SSL parameters for global engine: prefer mode")
 
 # Create async engine with enhanced parameters for better connection handling in cloud environments
 engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
-    echo=settings.debug,
+    echo=False,  # Don't echo SQL statements
     future=True,
     pool_pre_ping=True,               # Verify connections before using them
     pool_recycle=60,                  # Recycle connections more frequently (1 minute)
@@ -161,7 +160,7 @@ async def get_session() -> AsyncSession:
 
 def get_engine():
     """Get the SQLAlchemy engine."""
-    return engine 
+    return engine
 
 def get_async_engine(*args, **kwargs):
     """Get SQLAlchemy async engine with retry logic."""
@@ -182,31 +181,35 @@ def get_async_engine(*args, **kwargs):
                 raise ValueError("DATABASE_URL environment variable is required")
             else:
                 # In development, use SQLite as a fallback
-                logger.warning("Using SQLite as fallback for development")
-                database_url = "sqlite+aiosqlite:///./test.db"
+                logger.warning("Using SQLite as fallback for development in get_async_engine")
+                database_url = "sqlite+aiosqlite:///./allkinds.db" # Ensure this fallback is used for logic below
     
     # Force asyncpg driver for PostgreSQL
-    if database_url.startswith('postgresql:'):
+    if database_url.startswith('postgresql:'): # Check before replace
         database_url = database_url.replace('postgresql:', 'postgresql+asyncpg:')
         logger.info(f"Enforcing asyncpg driver with URL: {database_url[:25]}...")
-    
+    elif database_url.startswith('postgres:'): # Check for 'postgres:' as well
+        database_url = database_url.replace('postgres:', 'postgresql+asyncpg:')
+        logger.info(f"Enforcing asyncpg driver with URL: {database_url[:25]}...")
+
     # Set connection parameters with sensible timeouts
-    connect_args = {
-        "timeout": 120, 
-        "command_timeout": 120, 
-        "server_settings": {
-            "application_name": "allkinds",
-            "idle_in_transaction_session_timeout": "60000"
-        },
-        "statement_cache_size": 0
-    }
-    
-    # Add SSL mode for Railway deployment
-    if IS_RAILWAY:
-        logger.info("Running on Railway, configuring SSL parameters")
-        # Use prefer mode without the context - this is what asyncpg supports
-        connect_args["ssl"] = "prefer"
-        logger.info("Configured SSL parameters: prefer mode")
+    connect_args_local = {} # Default to empty for SQLite
+    if 'postgresql' in database_url or 'postgres' in database_url: # Check the potentially modified database_url
+        connect_args_local = {
+            "timeout": 120, 
+            "command_timeout": 120, 
+            "server_settings": {
+                "application_name": "allkinds",
+                "idle_in_transaction_session_timeout": "60000"
+            },
+            "statement_cache_size": 0
+        }
+        # Add SSL mode for Railway deployment if applicable for this specific database_url
+        # IS_RAILWAY check might need to be more nuanced if database_url could be non-Railway postgres
+        if IS_RAILWAY and ('postgresql' in database_url or 'postgres' in database_url): # Ensure it's a postgres URL on Railway
+            logger.info("Running on Railway, configuring SSL parameters for get_async_engine")
+            connect_args_local["ssl"] = "prefer"
+            logger.info("Configured SSL parameters for get_async_engine: prefer mode")
     
     # Create engine with retry logic
     max_retries = 3
@@ -224,7 +227,7 @@ def get_async_engine(*args, **kwargs):
                 pool_size=3,
                 max_overflow=5,
                 pool_use_lifo=True,
-                connect_args=connect_args
+                connect_args=connect_args_local # Use the locally defined connect_args_local
             )
             logger.info(f"Successfully created database engine on attempt {attempt + 1}")
             return engine

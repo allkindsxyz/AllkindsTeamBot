@@ -20,19 +20,15 @@ async def init_db(max_retries=5, retry_delay=2):
     logger.info(f"Initializing database with URL type: {SQLALCHEMY_DATABASE_URL.split('://')[0]}")
     
     # Set connect_args based on database type
-    connect_args = {
-        "command_timeout": 30,  # Command execution timeout
-        "timeout": 30,  # Increased connection timeout,
-        "statement_cache_size": 0  # Disable statement cache
-    }
+    connect_args = {}
     if 'postgresql' in SQLALCHEMY_DATABASE_URL or 'postgres' in SQLALCHEMY_DATABASE_URL:
         connect_args = {
-            "timeout": 30,             # Increased connection timeout to 30 seconds
-            "command_timeout": 30,     # Added command timeout of 30 seconds
+            "timeout": 30,
+            "command_timeout": 30,
             "server_settings": {
                 "application_name": "allkinds_init"
             },
-            "statement_cache_size": 0  # Disable statement cache for more reliable connections
+            "statement_cache_size": 0
         }
     
     # Create engine with improved connection parameters for Railway

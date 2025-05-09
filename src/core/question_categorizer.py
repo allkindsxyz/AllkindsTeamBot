@@ -1,5 +1,7 @@
 from loguru import logger
 from src.core.config import get_settings
+import random
+import os
 
 # Define our 4 fixed categories
 MAIN_CATEGORIES = [
@@ -30,9 +32,15 @@ async def categorize_question(question_text: str) -> str:
     """
     settings = get_settings()
     
+    # Check if we have a valid OpenAI API key
+    openai_api_key = os.environ.get("OPENAI_API_KEY") or getattr(settings, "openai_api_key", None)
+    if not openai_api_key or openai_api_key == "sk-placeholder" or len(openai_api_key) < 20:
+        logger.warning("No valid OpenAI API key found. Using keyword-based categorization.")
+        return keyword_based_categorization(question_text)
+    
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        client = AsyncOpenAI(api_key=openai_api_key)
         
         prompt = f"""
         Categorize this question into EXACTLY ONE of these four categories:
@@ -74,17 +82,24 @@ async def categorize_question(question_text: str) -> str:
         elif "career" in category.lower() or "ambit" in category.lower() or "work" in category.lower():
             return MAIN_CATEGORIES[3]
             
-        # Fallback keyword matching if API fails to categorize properly
-        text_lower = question_text.lower()
-        for category, keywords in CATEGORY_KEYWORDS.items():
-            if any(keyword in text_lower for keyword in keywords):
-                logger.info(f"Keyword matched as '{category}': {question_text[:30]}...")
-                return category
-            
-        # Default if no mapping found
-        logger.warning(f"Could not map category '{category}' - defaulting to {MAIN_CATEGORIES[0]}")
-        return MAIN_CATEGORIES[0]
+        # Fallback to keyword matching
+        return keyword_based_categorization(question_text)
         
     except Exception as e:
-        logger.error(f"Error extracting category: {e}")
-        return MAIN_CATEGORIES[0]  # Default to first category 
+        logger.error(f"Error extracting category with OpenAI: {e}")
+        return keyword_based_categorization(question_text)
+
+def keyword_based_categorization(question_text: str) -> str:
+    """Categorize a question based on simple keyword matching without using OpenAI."""
+    text_lower = question_text.lower()
+    
+    # Check each category's keywords
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        if any(keyword in text_lower for keyword in keywords):
+            logger.info(f"Keyword matched as '{category}': {question_text[:30]}...")
+            return category
+    
+    # If no keywords matched, return a random category
+    random_category = random.choice(MAIN_CATEGORIES)
+    logger.info(f"No keywords matched, randomly assigned '{random_category}': {question_text[:30]}...")
+    return random_category 

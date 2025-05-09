@@ -14,7 +14,7 @@ class QuestionRepository(BaseRepository[Question]):
 
     @track_db
     async def create_question(
-        self, session: AsyncSession, text: str, author_id: int, group_id: int
+        self, session: AsyncSession, text: str, author_id: int, group_id: int, is_active: bool = True
     ) -> Question:
         """Creates a new question with categorization."""
         # Categorize the question
@@ -27,7 +27,8 @@ class QuestionRepository(BaseRepository[Question]):
                 "author_id": author_id,
                 "group_id": group_id,
                 "category": category,
-                # Assuming default values for is_approved, is_active, counts etc.
+                "is_active": is_active,
+                # Assuming default values for is_approved, counts etc.
             }
         )
         # Ensure the transaction is committed
@@ -194,6 +195,8 @@ class QuestionRepository(BaseRepository[Question]):
         query = select(Question).where(
             Question.id.in_(question_ids),
             Question.is_active == True
+            # Not filtering by is_deleted yet since we just added the column
+            # We'll add it back later when we're sure all clients have the column
         ).order_by(Question.created_at.asc())  # Consistent with other functions - show oldest first
         
         result = await session.execute(query)

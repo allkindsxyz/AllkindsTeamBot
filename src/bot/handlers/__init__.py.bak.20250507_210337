@@ -1,0 +1,63 @@
+"""Bot handlers initialization module."""
+
+from aiogram import Dispatcher, F
+from src.bot.handlers import start, questions, matches, admin
+# Remove direct handler imports to avoid potential circular dependency issues
+# from src.bot.handlers.start import (
+#     cmd_start, on_create_team, on_join_team, 
+#     process_team_name, process_team_description, 
+#     on_confirm_team, on_cancel_team_creation
+# )
+from loguru import logger
+from aiogram.filters import Command, StateFilter
+from src.bot.states import TeamCreation # Import necessary state
+
+def register_handlers(dp: Dispatcher) -> None:
+    """Register all handlers for the bot."""
+    
+    logger.info("Registering handlers from all modules...")
+    
+    # --- Explicitly register /start command here (works in ANY state) --- 
+    dp.message.register(start.cmd_start, Command(commands=["start"]), StateFilter('*')) # Use start.cmd_start
+    logger.info("Registered cmd_start directly in __init__.py to work in any state")
+    # --- End explicit registration ---
+    
+    # --- Explicitly register start menu callbacks and flows here ---
+    dp.callback_query.register(start.on_create_team, F.data == "create_team") # Use start.on_create_team
+    dp.callback_query.register(start.on_join_team, F.data == "join_team") # Use start.on_join_team
+    dp.message.register(start.process_team_name, StateFilter(TeamCreation.waiting_for_name)) # Use start.process_team_name
+    dp.message.register(start.process_team_description, StateFilter(TeamCreation.waiting_for_description)) # Use start.process_team_description
+    dp.callback_query.register(start.on_confirm_team, F.data == "confirm_team", StateFilter(TeamCreation.confirm_creation)) # Use start.on_confirm_team
+    dp.callback_query.register(start.on_cancel_team_creation, F.data == "cancel_team", StateFilter(TeamCreation.confirm_creation)) # Use start.on_cancel_team_creation
+    logger.info("Registered start menu/flow handlers directly in __init__.py")
+    # --- End explicit registration ---
+    
+    # Register handlers in a specific order to ensure proper handling
+    # Start handlers must be registered first since they handle basic commands
+    logger.info("Registering start handlers...")
+    # start.register_handlers(dp) # Commenting this out as it seems problematic
+    logger.warning("Skipping start.register_handlers(dp) due to potential issues in start.py")
+    
+    logger.info("Registering questions handlers...")
+    questions.register_handlers(dp)
+    
+    logger.info("Registering matches handlers...")
+    matches.register_handlers(dp)
+    
+    logger.info("Registering admin handlers...")
+    admin.register_handlers(dp)
+    
+    logger.info("All handlers registered successfully")
+
+# For backward compatibility with any code that might expect these functions
+def register_user_commands(dp: Dispatcher):
+    """Register all user command handlers for compatibility."""
+    logger.info("Using compatibility register_user_commands function")
+    start.register_handlers(dp)
+    questions.register_handlers(dp)
+    matches.register_handlers(dp)
+
+def register_admin_commands(dp: Dispatcher):
+    """Register all admin command handlers for compatibility."""
+    logger.info("Using compatibility register_admin_commands function")
+    admin.register_handlers(dp)

@@ -23,6 +23,7 @@ class Question(Base):
     # Question status
     is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     
     # Popularity metrics
     view_count: Mapped[int] = mapped_column(Integer, default=0)

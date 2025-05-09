@@ -186,9 +186,10 @@ async def run_webhook_bot():
     bot_session = AiohttpSession()
     bot = Bot(token=settings.BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
     
-    # Configure storage - Redis if available, otherwise Memory
-    if settings.REDIS_URL:
-        storage = RedisStorage.from_url(settings.REDIS_URL)
+    # Configure storage
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url:
+        storage = RedisStorage.from_url(redis_url)
         logger.info("Using Redis storage for FSM")
     else:
         storage = MemoryStorage()
@@ -304,8 +305,9 @@ async def run_polling_bot():
     bot = Bot(token=settings.BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
     
     # Configure storage
-    if settings.REDIS_URL:
-        storage = RedisStorage.from_url(settings.REDIS_URL)
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url:
+        storage = RedisStorage.from_url(redis_url)
         logger.info("Using Redis storage for FSM")
     else:
         storage = MemoryStorage()
@@ -336,23 +338,23 @@ async def run_polling_bot():
     logger.info(f"System diagnostics: {diagnostics}")
     
     # Ensure webhook is completely removed with retries
-for attempt in range(3):
-    logger.info(f"Webhook deletion attempt {attempt+1}/3")
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook deleted successfully")
-        # Verify deletion
-        webhook_info = await bot.get_webhook_info()
-        if not webhook_info.url:
-            logger.info("Confirmed webhook is not set")
-            break
-        else:
-            logger.warning(f"Webhook still set to {webhook_info.url}, retrying...")
-    except Exception as e:
-        logger.error(f"Error deleting webhook: {e}")
-    await asyncio.sleep(1)
+    for attempt in range(3):
+        logger.info(f"Webhook deletion attempt {attempt+1}/3")
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook deleted successfully")
+            # Verify deletion
+            webhook_info = await bot.get_webhook_info()
+            if not webhook_info.url:
+                logger.info("Confirmed webhook is not set")
+                break
+            else:
+                logger.warning(f"Webhook still set to {webhook_info.url}, retrying...")
+        except Exception as e:
+            logger.error(f"Error deleting webhook: {e}")
+        await asyncio.sleep(1)
 
-# Set up signal handlers
+    # Set up signal handlers
     def signal_handler(*args):
         logger.info("Received termination signal")
         raise asyncio.CancelledError()
@@ -396,7 +398,7 @@ async def lifespan(app: web.Application):
     # Database setup
     try:
         logger.info("Setting up database connection in lifespan context")
-        engine = get_async_engine(settings.DATABASE_URL)
+        engine = get_async_engine(settings.DB_URL)
         await init_models(engine)
         logger.info("Database setup completed")
     except Exception as e:
@@ -495,7 +497,7 @@ async def main():
         try:
             # Check for database migrations
             if not os.environ.get("SKIP_DB_INIT"):
-                engine = get_async_engine(settings.db_url)
+                engine = get_async_engine(settings.DB_URL)
                 await init_models(engine)
                 logger.info("Database initialized")
                 
@@ -504,15 +506,14 @@ async def main():
                 await run_startup_tasks()
             
             # Force polling mode regardless of settings
-logger.info("USE_WEBHOOK setting overridden to False, using polling mode")
+            logger.info("USE_WEBHOOK setting overridden to False, using polling mode")
 
-                
-# Add detailed diagnostics
-logger.info("Starting bot in polling mode with detailed diagnostics:")
-logger.info(f"- Bot Token available: {bool(BOT_TOKEN)}")
-logger.info(f"- Database URL configured: {bool(settings.db_url)}")
-logger.info(f"- Using storage: {\'Redis\' if settings.REDIS_URL else \'Memory\'}")
-await run_polling_bot()
+            # Add detailed diagnostics
+            logger.info("Starting bot in polling mode with detailed diagnostics:")
+            logger.info(f"- Bot Token available: {bool(BOT_TOKEN)}")
+            logger.info(f"- Database URL configured: {bool(settings.DB_URL)}")
+            logger.info(f"- Using storage: {'Redis' if os.environ.get('REDIS_URL') else 'Memory'}")
+            await run_polling_bot()
         except Exception as e:
             logger.error(f"Critical error in main function: {e}")
             traceback.print_exc()

@@ -13,6 +13,18 @@ class AnswerType(str, Enum):
     NO = "no"
     YES = "yes"
     STRONG_YES = "strong_yes"
+    
+    def to_int(self) -> int:
+        """Convert answer type to integer value for matching algorithm:
+        strong_no = -2, no = -1, yes = 1, strong_yes = 2
+        """
+        mapping = {
+            self.STRONG_NO: -2,
+            self.NO: -1,
+            self.YES: 1,
+            self.STRONG_YES: 2,
+        }
+        return mapping[self]
 
 
 class Answer(Base):

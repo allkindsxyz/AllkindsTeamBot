@@ -1,207 +1,140 @@
 #!/usr/bin/env python3
 """
-Health check endpoint for Railway deployment.
-Also provides webhook forwarding to ensure bots receive commands.
+Health check module for the bot.
+Provides a small HTTP server for health checks and webhook handling.
 """
 
-import os
-import logging
-import sys
-import json
-import time
 import asyncio
+import json
+import logging
+import os
+import sys
 from http import HTTPStatus
+from typing import Tuple, Dict, Any, Optional
 
-# Setup basic logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+import httpx
+from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Service configuration
+# Configuration from environment
 MAIN_BOT_PORT = int(os.environ.get("MAIN_BOT_PORT", 8081))
-COMMUNICATOR_BOT_PORT = int(os.environ.get("COMMUNICATOR_BOT_PORT", 8082))
 MAIN_BOT_HOST = os.environ.get("MAIN_BOT_HOST", "localhost")
-COMMUNICATOR_BOT_HOST = os.environ.get("COMMUNICATOR_BOT_HOST", "localhost")
 
-try:
-    from fastapi import FastAPI, Request, Response
-    from fastapi.responses import JSONResponse
-    import httpx
-    
-    # Create FastAPI app
-    app = FastAPI(title="Allkinds Service")
+# Create the FastAPI app
+app = FastAPI(title="Allkinds Bot Health Check")
 
-    @app.get("/health")
-    async def health_check():
-        """Health check endpoint for Railway."""
-        # Check if bots are accessible
-        bot_status = {
-            "main_bot": await check_bot_health(MAIN_BOT_HOST, MAIN_BOT_PORT),
-            "communicator_bot": await check_bot_health(COMMUNICATOR_BOT_HOST, COMMUNICATOR_BOT_PORT)
-        }
-        
-        return {
-            "status": "ok",
-            "service": "allkinds",
-            "environment": os.environ.get("RAILWAY_ENVIRONMENT", "unknown"),
-            "bots": bot_status,
-            "version": "1.1.0",
-            "webhook_host": os.environ.get("WEBHOOK_HOST", "not_set")
-        }
+class HealthStatus(BaseModel):
+    """Health status model."""
+    status: str
+    details: Dict[str, Any]
 
-    @app.get("/")
-    async def root():
-        """Root endpoint redirects to health check."""
-        return await health_check()
-    
-    async def check_bot_health(host, port):
-        """Check if a bot service is running and responding."""
-        try:
-            url = f"http://{host}:{port}/ping"
-            async with httpx.AsyncClient() as client:
-                try:
-                    response = await client.get(url, timeout=2.0)
-                    if response.status_code == 200:
-                        return "running"
-                    return f"error: status {response.status_code}"
-                except Exception as e:
-                    return f"error: {str(e)}"
-        except Exception as e:
-            return f"error: {str(e)}"
-        
-    @app.post("/webhook")
-    async def webhook_handler(request: Request):
-        """Unified webhook handler that forwards to the appropriate bot."""
-        try:
-            body = await request.body()
-            try:
-                update = json.loads(body)
-                update_id = update.get("update_id", "unknown")
-                logger.info(f"Received update ID: {update_id}")
-                
-                # Log message text if available
-                if "message" in update and "text" in update["message"]:
-                    logger.info(f"Message text: {update['message']['text']}")
-            except Exception as e:
-                logger.error(f"Error parsing update: {e}")
-            
-            # Forward the update to both bots internally
-            async with httpx.AsyncClient() as client:
-                # Forward to main bot
-                main_url = f"http://{MAIN_BOT_HOST}:{MAIN_BOT_PORT}/webhook"
-                logger.info(f"Forwarding to main bot: {main_url}")
-                try:
-                    main_response = await client.post(
-                        main_url, 
-                        content=body,
-                        timeout=5.0
-                    )
-                    logger.info(f"Main bot response: {main_response.status_code}")
-                except Exception as e:
-                    logger.error(f"Error forwarding to main bot: {e}")
-                
-                # Forward to communicator bot
-                comm_url = f"http://{COMMUNICATOR_BOT_HOST}:{COMMUNICATOR_BOT_PORT}/webhook"
-                logger.info(f"Forwarding to communicator bot: {comm_url}")
-                try:
-                    comm_response = await client.post(
-                        comm_url, 
-                        content=body,
-                        timeout=5.0
-                    )
-                    logger.info(f"Communicator bot response: {comm_response.status_code}")
-                except Exception as e:
-                    logger.error(f"Error forwarding to communicator bot: {e}")
-            
-            return Response(status_code=HTTPStatus.OK)
-        except Exception as e:
-            logger.exception(f"Error in webhook handler: {e}")
-            return Response(status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
-    
-    @app.get("/ping")
-    async def ping():
-        """Simple ping endpoint for health checks."""
-        return {"status": "ok"}
-
-    async def wait_for_bots_startup():
-        """Wait for bots to start up before accepting webhooks."""
-        logger.info("Waiting for bots to start up...")
-        max_attempts = 20
-        for attempt in range(1, max_attempts + 1):
-            logger.info(f"Checking bot services (attempt {attempt}/{max_attempts})...")
-            main_status = await check_bot_health(MAIN_BOT_HOST, MAIN_BOT_PORT)
-            comm_status = await check_bot_health(COMMUNICATOR_BOT_HOST, COMMUNICATOR_BOT_PORT)
-            
-            if "running" in main_status and "running" in comm_status:
-                logger.info("Both bots are running!")
-                return True
-                
-            if attempt < max_attempts:
-                logger.info(f"Waiting for bots... Main: {main_status}, Communicator: {comm_status}")
-                await asyncio.sleep(5)
-        
-        logger.warning("Timed out waiting for bots to start. Continuing anyway.")
+async def check_bot_health(host: str, port: int) -> bool:
+    """Check if a bot is healthy by making a request to its health endpoint."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"http://{host}:{port}/health", timeout=5.0)
+            return response.status_code == 200
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
         return False
 
-    if __name__ == "__main__":
+@app.get("/health", response_model=HealthStatus)
+async def health_check() -> Dict[str, Any]:
+    """Health check endpoint."""
+    # Check each bot's health
+    main_status = await check_bot_health(MAIN_BOT_HOST, MAIN_BOT_PORT)
+    
+    status = "ok" if main_status else "unhealthy"
+    
+    return {
+        "status": status,
+        "details": {
+            "main_bot": main_status,
+        }
+    }
+
+@app.post("/webhook")
+async def webhook_handler(request: Request):
+    """Unified webhook handler that forwards to the appropriate bot."""
+    try:
+        body = await request.body()
         try:
-            import uvicorn
-            port = int(os.environ.get("PORT", 8080))
-            logger.info(f"Starting Allkinds service on port {port}")
-            logger.info(f"Main bot expected at {MAIN_BOT_HOST}:{MAIN_BOT_PORT}")
-            logger.info(f"Communicator bot expected at {COMMUNICATOR_BOT_HOST}:{COMMUNICATOR_BOT_PORT}")
+            update = json.loads(body)
+            update_id = update.get("update_id", "unknown")
+            logger.info(f"Received update ID: {update_id}")
             
-            # Start background task to check bot status
-            asyncio.run(wait_for_bots_startup())
-            
-            uvicorn.run(app, host="0.0.0.0", port=port)
-        except ImportError:
-            logger.error("Uvicorn not installed. Falling back to simple HTTP server.")
-            from http.server import HTTPServer, BaseHTTPRequestHandler
-            
-            class SimpleHandler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(b'{"status":"ok","service":"allkinds"}')
-                
-                def do_POST(self):
-                    if self.path == '/webhook':
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'application/json')
-                        self.end_headers()
-                        self.wfile.write(b'{"ok":true}')
-                        logger.info("Webhook request received but can't be processed in simple mode")
-            
-            port = int(os.environ.get("PORT", 8080))
-            httpd = HTTPServer(('0.0.0.0', port), SimpleHandler)
-            logger.info(f"Starting simple HTTP server on port {port}")
-            httpd.serve_forever()
-except ImportError:
-    # Fallback to simple HTTP server if FastAPI is not available
-    logger.warning("FastAPI not installed. Using simple HTTP server instead.")
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    
-    class SimpleHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"status":"ok","service":"allkinds"}')
+            # Log message text if available
+            if "message" in update and "text" in update["message"]:
+                logger.info(f"Message text: {update['message']['text']}")
+        except Exception as e:
+            logger.error(f"Error parsing update: {e}")
         
-        def do_POST(self):
-            if self.path == '/webhook':
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(b'{"ok":true}')
-                logger.info("Webhook request received but can't be processed in simple mode")
+        # Forward the update to the main bot internally
+        async with httpx.AsyncClient() as client:
+            # Forward to main bot
+            main_url = f"http://{MAIN_BOT_HOST}:{MAIN_BOT_PORT}/webhook"
+            logger.info(f"Forwarding to main bot: {main_url}")
+            try:
+                main_response = await client.post(
+                    main_url, 
+                    content=body,
+                    timeout=5.0
+                )
+                logger.info(f"Main bot response: {main_response.status_code}")
+            except Exception as e:
+                logger.error(f"Error forwarding to main bot: {e}")
+        
+        return Response(status_code=HTTPStatus.OK)
+    except Exception as e:
+        logger.exception(f"Error in webhook handler: {e}")
+        return Response(status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Handle HTTP exceptions."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"message": str(exc.detail)},
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Handle validation errors."""
+    return JSONResponse(
+        status_code=HTTPStatus.BAD_REQUEST,
+        content={"message": str(exc)},
+    )
+
+async def wait_for_bots(timeout: int = 60) -> bool:
+    """Wait for bots to become healthy."""
+    logger.info("Waiting for bots to become healthy...")
+    start = asyncio.get_event_loop().time()
     
-    if __name__ == "__main__":
-        port = int(os.environ.get("PORT", 8080))
-        httpd = HTTPServer(('0.0.0.0', port), SimpleHandler)
-        logger.info(f"Starting simple HTTP server on port {port}")
-        httpd.serve_forever()
+    while asyncio.get_event_loop().time() - start < timeout:
+        main_status = await check_bot_health(MAIN_BOT_HOST, MAIN_BOT_PORT)
+        
+        if main_status:
+            logger.info("All bots are healthy!")
+            return True
+        
+        logger.info(f"Waiting for bots... Main: {main_status}")
+        await asyncio.sleep(5)
+    
+    logger.warning("Timed out waiting for bots to become healthy!")
+    return False
+
+@app.on_event("startup")
+async def startup_event():
+    """Print startup information."""
+    logger.info(f"Health check server started")
+    logger.info(f"Main bot expected at {MAIN_BOT_HOST}:{MAIN_BOT_PORT}")
+    
+    # Don't block startup if bots aren't ready
+    asyncio.create_task(wait_for_bots())
