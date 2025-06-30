@@ -87,6 +87,12 @@ async def handle_start_with_link(message: Message, state: FSMContext, bot: Bot, 
     """Handle /start command with deep link payload from matching."""
     user_id = message.from_user.id
     try:
+        # Получаем пользователя из БД для дальнейшего использования
+        user = await user_repo.get_by_telegram_id(session, user_id)
+        if not user:
+            await message.answer("You need to register in the main bot first.")
+            return
+        
         # Log the raw message text to see exactly what Telegram sends
         logger.info(f"[DEEP_LINK] Raw message text: {message.text}")
         logger.info(f"[DEEP_LINK] User {user_id} started communicator bot with deep link")
@@ -131,20 +137,6 @@ async def handle_start_with_link(message: Message, state: FSMContext, bot: Bot, 
             await message.answer("Invalid link format. Please use the link provided after finding a match.")
             return
         
-        # Get or create user in database
-        logger.debug(f"[DEEP_LINK] Getting user from database: {user_id}")
-        try:
-            user = await user_repo.get_by_telegram_id(session, user_id)
-            if not user:
-                logger.error(f"[DEEP_LINK] User {user_id} not found in database when starting with deep link")
-                await message.answer("You need to register in the main bot first.")
-                return
-            logger.debug(f"[DEEP_LINK] Found user in DB: ID={user.id}")
-        except Exception as e:
-            logger.error(f"[DEEP_LINK] Database error when getting user: {e}")
-            await message.answer("Database error when retrieving your user information. Please try again.")
-            return
-
         # Validate payload format (expecting "chat_[chat_id]" or "match_[match_id]")
         if payload.startswith("chat_"):
             # Direct chat link
